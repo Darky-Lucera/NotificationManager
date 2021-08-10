@@ -167,5 +167,7 @@ main(int argc, char *argv[]) {
         printf("Goblins win!\n");
     }
 
+    NotificationManager::Clear();
+
     return 0;
 }

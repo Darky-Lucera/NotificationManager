@@ -106,5 +106,7 @@ main(int argc, char *argv[]) {
         printf("\n");
     }
 
+    NotificationManager::Clear();
+
     return 0;
 }
