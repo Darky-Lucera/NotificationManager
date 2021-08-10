@@ -41,6 +41,10 @@ else()
     add_compile_options(-Wall -Wextra)
     add_compile_options(-Wno-switch -Wno-unused-function -Wno-unused-parameter)
     add_compile_options(-ffast-math)
+    if (UNIX)
+        add_compile_options(-pthread)
+        link_libraries(-lpthread)
+    endif()
 endif()
 
 #--------------------------------------

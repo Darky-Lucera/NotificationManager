@@ -85,7 +85,7 @@ main(int argc, char *argv[]) {
             if(runners[i].mThread.joinable())
                 runners[i].mThread.join();
             ++total;
-            printf("Thread %lld joined\n", i);
+            printf("Thread %u joined\n", uint32_t(i));
         }
     );
 
@@ -101,7 +101,7 @@ main(int argc, char *argv[]) {
 
     for(size_t i=0; i<kNumThreads; ++i) {
         for(size_t j=0; j<kNumThreads; ++j) {
-            printf("%2lld ", runners[i].mMessages[j]);
+            printf("%2u ", uint32_t(runners[i].mMessages[j]));
         }
         printf("\n");
     }

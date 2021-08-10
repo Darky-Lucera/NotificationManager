@@ -1,11 +1,11 @@
-#include <cmath>
-#include "agent.h"
-#include "notifications/NotificationManager.h"
-#include "NotificationId.h"
-
 #if defined(_WIN32) && !defined(__CYGWIN32__)
     #include <windows.h>
 #endif
+#include <cmath>
+#include <stdarg.h>
+#include "agent.h"
+#include "notifications/NotificationManager.h"
+#include "NotificationId.h"
 
 //-------------------------------------
 using MindShake::NotificationManager;
