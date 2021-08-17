@@ -21,10 +21,6 @@
     using linb::any;
     using linb::any_cast;
     using linb::bad_any_cast;
-    //#include "any/indi_any.h"
-    //using mystd::any;
-    //using mystd::any_cast;
-    //using mystd::bad_any_cast;
 #endif
 //-------------------------------------
 #include "Delegate.h"

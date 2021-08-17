@@ -4,7 +4,7 @@
 
 This utility is based on a previous one we used in **Lucera Project**'s **MindShake** game engine. But the previous version was programmed in _C++98_ and instead of _any_ it used our own implementation of _variant_. But in essence, it is the same.
 
-By default, it uses _C++17_ but it has a _C++11_ fallback using the std::any implementation from @thelink2012 [GitHub](https://github.com/thelink2012/any).
+By default, it uses _C++17_ std::any library feature but it has a _C++11_ fallback using the  implementation from @thelink2012 [GitHub](https://github.com/thelink2012/any).
 
 Due to that it is recommended to use plain ```any, any_cast, bad_any_cast``` instead of ```std::any, std::any_cast, std::bad_any_cast``` to maximize compatibility.
 
@@ -89,3 +89,7 @@ NotificationManager::Clear();
 
     Because it will be only one instance and, in this case, I prefer not to use a Singleton, to avoid having to continually call ```GetInstance```.
     I also don't want to use ~~(an over-designed, ahem)~~ a more complicated pattern to accomplish this simple task.
+
+* Why is not a header only utility?
+
+    Because I want it to be compatible with C++11, and static inline variables are a _C++17_ feature..
