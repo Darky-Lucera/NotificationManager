@@ -36,7 +36,7 @@ NotificationManager::SendNotification(NotificationId id, any data, bool overwrit
 
 //-------------------------------------
 NotificationManager::Delegate &
-NotificationManager::GetDelegateForThisThread(NotificationId id) {
+NotificationManager::GetDelegate(NotificationId id) {
     const std::lock_guard<std::mutex> lock(GetMutex());
 
     return mTIDNotifications[std::this_thread::get_id()][id];

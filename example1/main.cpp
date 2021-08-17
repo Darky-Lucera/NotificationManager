@@ -41,7 +41,7 @@ struct Runner {
     }
 
     void run() {
-        NotificationManager::GetDelegateForThisThread(NotificationId::Hello)
+        NotificationManager::GetDelegate(NotificationId::Hello)
             .Add([this](NotificationId id, const any &data) {
                 size_t i = any_cast<size_t>(data);
                 mMessages[i] = mMessages[i] + 1;
@@ -79,7 +79,7 @@ main(int argc, char *argv[]) {
     std::vector<Runner>  runners;
     volatile size_t total = 0;
 
-    NotificationManager::GetDelegateForThisThread(NotificationId::Dead)
+    NotificationManager::GetDelegate(NotificationId::Dead)
         .Add([&](NotificationId id, const any &data) {
             size_t i = any_cast<size_t>(data);
             if(runners[i].mThread.joinable())

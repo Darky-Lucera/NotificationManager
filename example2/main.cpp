@@ -93,7 +93,7 @@ main(int argc, char *argv[]) {
     // This is a mono-thread application
     NotificationManager::SetMT(false);
 
-    NotificationManager::GetDelegateForThisThread(NotificationId::Log)
+    NotificationManager::GetDelegate(NotificationId::Log)
         .Add([&](NotificationId id, const any &data) {
             std::string msg = any_cast<std::string>(data);
             console[consoleIndex] = msg;
@@ -122,7 +122,7 @@ main(int argc, char *argv[]) {
         }
     );
 
-    NotificationManager::GetDelegateForThisThread(NotificationId::Kill)
+    NotificationManager::GetDelegate(NotificationId::Kill)
         .Add([&](NotificationId id, const any &data) {
             Agent *dead = any_cast<Agent *>(data);
             if (dead == &goblinA) {

@@ -50,7 +50,7 @@ namespace MindShake {
             using TID      = std::thread::id;
 
         public:
-            static Delegate &   GetDelegateForThisThread(NotificationId id);
+            static Delegate &   GetDelegate(NotificationId id);
             static void         SendNotification(NotificationId id, any data, bool overwrite = false);
 
             static void         SendStoredNotificationsForThisThread();
