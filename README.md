@@ -12,10 +12,10 @@ It was also successfully ported to _C#_ to be able to use it with _Unity_ and to
 
 ## User Interface
 
-**```GetDelegateForThisThread(NotificationId id)```:** Gets the delegate for the current thread. With this, you can Add or Remove 'Callables' (functions, methods, or lambdas) to the specified notification id.
+**```GetDelegate(NotificationId id)```:** Gets the delegate **_for the current thread_**. With this, you can Add or Remove 'Callables' (functions, methods, or lambdas) to the specified notification id.
 
 ```cpp
-NotificationManager::GetDelegateForThisThread(NotificationId::Log)
+NotificationManager::GetDelegate(NotificationId::Log)
     .Add([](NotificationId id, const any &data) {
         const std::string &msg = any_cast<std::string>(data);
         fprintf(logFile, "%s\n", msg.c_str());
@@ -69,19 +69,21 @@ void         DisableAutoSend();
 bool         GetAutoSend();
 ```
 
-# How to use it
+## How to use it
 
-Just drop the files in your project.
+Just drop the files NotificationManager.h, NotificationManager.cpp and NotificationId.h to your project (**notifications** is a good name for the folder containing them).
 
-By default, it contains an empty **NotificationId.h** that you have to fill with your own notification ids.
+The **notifications** folder here contains an empty **NotificationId.h** file that you have to fill with your own notification ids.
 
-Before exiting your program it is a good idea to call ```Clear()``` for free some resources.
+_Note: **example1** and **example2** have their own **NotificationId.h** files with different ids for each project._
+
+Before exiting your program it is a good idea to call ```Clear()``` to free some resources.
 
 ```cpp
 NotificationManager::Clear();
 ```
 
-# FAQ
+## FAQ
 
 * Why is NotificationManager a static class?
 
