@@ -1,15 +1,19 @@
 cmake_minimum_required(VERSION 3.10)
 project(NotificationCenter)
 
+# C++ version
+#--------------------------------------
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+#--------------------------------------
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
 # Compiler flags
 #--------------------------------------
 if(MSVC)
+    add_definitions(-D_CRT_SECURE_NO_WARNINGS)
     # Security check
     add_compile_options(/GS)
     # Function level linking
@@ -35,6 +39,8 @@ if(MSVC)
     add_compile_options("$<$<CONFIG:Debug>:/RTC1>")
     # Enable intrinsics
     add_compile_options("$<$<CONFIG:RELEASE>:/Oi>")
+    # Force Visual Studio to actualize __cplusplus version macro
+    add_compile_options(/Zc:__cplusplus)
 else()
     add_compile_options("$<$<CONFIG:Debug>:-g>")
     add_compile_options("$<IF:$<CONFIG:Debug>,-O0,-O2>")
