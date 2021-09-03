@@ -11,7 +11,7 @@
 #include <unordered_map>
 #include <thread>
 #include <mutex>
-#if __cplusplus >= 201703L
+#if __cplusplus >= 201703L || (defined(_MSVC_LANG) && _MSVC_LANG >= 201703L)
     #include <any>
     using std::any;
     using std::any_cast;

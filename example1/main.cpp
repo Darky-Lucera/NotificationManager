@@ -41,13 +41,7 @@ struct Runner {
     }
 
     void run() {
-        NotificationManager::GetDelegate(NotificationId::Hello)
-            .Add([this](NotificationId id, const any &data) {
-                size_t i = any_cast<size_t>(data);
-                mMessages[i] = mMessages[i] + 1;
-                ++mMessagesReceived;
-            }
-        );
+        NotificationManager::GetDelegate(NotificationId::Hello).Add(this, &Runner::Hello);
 
         std::this_thread::sleep_for(100ms);
         while(mMessagesSent < kNumMessages) {
@@ -65,6 +59,13 @@ struct Runner {
         }
         NotificationManager::SendNotification(NotificationId::Dead, mId);
     }
+
+    void Hello(NotificationId id, const any &data) {
+        size_t i = any_cast<size_t>(data);
+        mMessages[i] = mMessages[i] + 1;
+        ++mMessagesReceived;
+    }
+
 
     size_t      mId;
     size_t      mMessagesSent {};

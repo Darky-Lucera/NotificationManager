@@ -202,7 +202,7 @@ namespace MindShake {
         wrapper->object   = reinterpret_cast<UnknownClass *>(object);
 
     #if defined(_MSC_VER)
-        //memset(((void *) &wrapper->method), 0, sizeof(TMethod));
+        memset(((void *) &wrapper->method), 0, sizeof(TMethod));
         memcpy(((void *) &wrapper->method), ((void *) &method), sizeof(method));
     #else
         wrapper->method  = reinterpret_cast<TMethod>(method);
