@@ -47,7 +47,7 @@ namespace MindShake {
 
         public:
             static Delegate &   GetDelegate(NotificationId id);
-            static void         SendNotification(NotificationId id, any data, bool overwrite = false);
+            static void         SendNotification(NotificationId id, any data = int(0), bool overwrite = false);
 
             static void         SendStoredNotificationsForThisThread();
 
