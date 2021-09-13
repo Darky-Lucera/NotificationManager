@@ -1,6 +1,6 @@
 # NotificationManager
 
-​NotificationManager is a thread-safe, easy-to-use utility for sending and receiving notifications. It allows you to decouple different modules of your application.
+​NotificationManager is a thread-safe, easy-to-use utility for sending and receiving notifications. It allows you to decouple different modules of your application. It can also simplify multi-threaded communication in many cases.
 
 This utility is based on a previous one we used in **Lucera Project**'s **MindShake** game engine. But the previous version was programmed in _C++98_ and instead of _any_ it used our own implementation of _variant_. But in essence, it is the same.
 
@@ -15,8 +15,35 @@ It was also successfully ported to _C#_ to be able to use it with _Unity_ and to
 **```GetDelegate(NotificationId id)```:** Gets the delegate **_for the current thread_**. With this, you can Add or Remove 'Callables' (functions, methods, or lambdas) to the specified notification id.
 
 ```cpp
+void
+Logger(NotificationId id, const any &data) {
+    const std::string &msg = any_cast<std::string>(data);
+    fprintf(logFile, "%s\n", msg.c_str());
+}
+
+NotificationManager::GetDelegate(NotificationId::Log).Add(&Logger);
+```
+
+```cpp
+struct Logger {
+    Logger() {
+        NotificationManager::GetDelegate(NotificationId::Log).Add(this, &Logger::Log);
+    }
+
+    ~Logger() {
+        NotificationManager::GetDelegate(NotificationId::Log).Remove(this, &Logger::Log);
+    }
+
+    void Log(NotificationId id, const any &data) {
+        const std::string &msg = any_cast<std::string>(data);
+        fprintf(logFile, "%s\n", msg.c_str());
+    }
+};
+```
+
+```cpp
 NotificationManager::GetDelegate(NotificationId::Log)
-    .Add([](NotificationId id, const any &data) {
+    .Add([&logFile](NotificationId id, const any &data) {
         const std::string &msg = any_cast<std::string>(data);
         fprintf(logFile, "%s\n", msg.c_str());
     }
@@ -27,7 +54,7 @@ _**Note:** I have to implement also my own wrapper for callables because I need 
 
 **```SendNotification(NotificationId id, std::any data, bool overwrite = false)```:** Allows sending a notification from anywhere, with whatever data. It also allows the user to overwrite pending notifications. For instance, It's uncommon that someone needs all the UI windows to reshape notifications, just the last one is enough.
 
-By default, the notifications are sent to the current thread if there is an associated delegate for the NotificationId.
+By default, the notifications are sent to the current thread if there is an associated delegate for the specified NotificationId.
 
 ```cpp
 NotificationManager::SendNotification(NotificationId::Log, "Something happened"s);
@@ -71,7 +98,7 @@ bool         GetAutoSend();
 
 ## How to use it
 
-Just drop the files NotificationManager.h, NotificationManager.cpp and NotificationId.h to your project (**notifications** is a good name for the folder containing them).
+Just drop the files NotificationManager.h, NotificationManager.cpp and _NotificationId.h_ to your project (**notifications** is a good name for the folder containing them).
 
 The **notifications** folder here contains an empty **NotificationId.h** file that you have to fill with your own notification ids.
 
@@ -92,4 +119,4 @@ NotificationManager::Clear();
 
 * Why is not a header only utility?
 
-    Because I want it to be compatible with C++11, and static inline variables are a _C++17_ feature..
+    Because I want it to be compatible with C++11, and static inline variables are a _C++17_ feature. Sorry.

@@ -57,6 +57,8 @@ struct Runner {
             std::this_thread::sleep_for(50ms);
             NotificationManager::SendStoredNotificationsForThisThread();
         }
+
+        NotificationManager::GetDelegate(NotificationId::Hello).Add(this, &Runner::Hello);
         NotificationManager::SendNotification(NotificationId::Dead, mId);
     }
 
