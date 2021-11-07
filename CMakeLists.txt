@@ -88,3 +88,16 @@ add_executable(Example2
     ${NOTIFICATIONS}
 )
 target_include_directories(Example2 PRIVATE .)
+
+#--------------------------------------
+set(Example3
+    example3/main.cpp
+    example3/NotificationId.h
+)
+source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}/example3" FILES ${Example3})
+
+add_executable(Example3
+    ${Example3}
+    ${NOTIFICATIONS}
+)
+target_include_directories(Example3 PRIVATE .)

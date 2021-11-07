@@ -44,18 +44,21 @@ namespace MindShake {
 
                 void            ToBeRemoved() { object = nullptr, method = {}, isEnabled = false; }
 
+                enum class Type { Unknown, Function, Method, Lambda };
+
                 //--
                 UnknownClass    *object {};
                 union {
                     TMethod      method {};
                     TFunc        func;
                 };
+                Type    type = Type::Unknown;
                 bool    isEnabled = true;
             };
 
             //-----------------------------
             struct WrapperCFunc : Wrapper {
-                        WrapperCFunc(TFunc f) : Wrapper(f) {}
+                        WrapperCFunc(TFunc f) : Wrapper(f) { Wrapper::type = Wrapper::Type::Function; }
 
                 void    operator()(Args&&... args) const override {
                     if(Wrapper::func != nullptr)
@@ -65,6 +68,8 @@ namespace MindShake {
 
             //-----------------------------
             struct WrapperMethod : Wrapper {
+                        WrapperMethod() { Wrapper::type = Wrapper::Type::Method; }
+
                 void    operator()(Args&&... args) const override {
                     if(Wrapper::object != nullptr)
                         ((Wrapper::object)->*(Wrapper::method))(std::forward<Args>(args)...);
@@ -75,7 +80,7 @@ namespace MindShake {
             //-----------------------------
             template <typename Lambda>
             struct WrapperLambda : Wrapper {
-                WrapperLambda(const Lambda &l) : lambda(l) {}
+                WrapperLambda(const Lambda &l) : lambda(l) { Wrapper::type = Wrapper::Type::Lambda; }
 
                 void    operator()(Args&&... args) const override {
                     if(Wrapper::isEnabled)
@@ -117,6 +122,7 @@ namespace MindShake {
                             Add(const Lambda &lambda)                                           { mWrappers.emplace_back(new WrapperLambda<Lambda>(lambda)); }
 
             //--
+            bool            Remove(std::nullptr_t, bool lazy=false)                             { return false;                                         }
             bool            Remove(TFunc func, bool lazy=false)                                 { return RemoveIndex(Find(func), lazy);                 }
             template <class Class>
             bool            Remove(Class *object, bool lazy=false)                              { return Remove(object, &Class::operator(), lazy);      }
@@ -133,7 +139,7 @@ namespace MindShake {
             // Hack to detect lambdas with captures (and return a value)
             //template <typename Lambda, std::enable_if_t<!std::is_assignable_v<Lambda, Lambda>, bool> = true>
             //bool            Remove(const Lambda &l) {
-            //    static_assert(false, "You cannot remove a lambda");
+            //    static_assert(false, "You cannot remove a complex lambda");
             //    return -1;
             //}
 
@@ -157,7 +163,7 @@ namespace MindShake {
             // Hack to detect lambdas with captures (and return a value)
             //template <typename Lambda, std::enable_if_t<!std::is_assignable_v<Lambda, Lambda>, bool> = true>
             //ptrdiff_t       Find(const Lambda &l) {
-            //    static_assert(false, "You cannot find a lambda");
+            //    static_assert(false, "You cannot find a complex lambda");
             //    return -1;
             //}
 
@@ -171,7 +177,7 @@ namespace MindShake {
             #undef kMethod
 
         protected:
-            bool            RemoveIndex(size_t idx, bool lazy);
+            bool            RemoveIndex(ptrdiff_t idx, bool lazy);
 
         protected:
             std::vector<Wrapper *> mWrappers;
@@ -214,7 +220,7 @@ namespace MindShake {
     //-------------------------------------
     template <typename ...Args>
     bool
-    Delegate<void(Args...)>::RemoveIndex(size_t idx, bool lazy) {
+    Delegate<void(Args...)>::RemoveIndex(ptrdiff_t idx, bool lazy) {
         if(idx >= 0) {
             if(lazy == false) {
                 delete mWrappers[idx];
@@ -254,7 +260,7 @@ namespace MindShake {
         for(auto &wrapper : mWrappers) {
             if(wrapper->object == reinterpret_cast<UnknownClass *>(object)) {
     #if defined(_MSC_VER)
-                if(memcmp(&wrapper->method, ((void *) &method), sizeof(method))) {
+                if(memcmp(&wrapper->method, (void *) &method, sizeof(method)) == 0) {
     #else
                 if(wrapper->method == reinterpret_cast<TMethod>(method)) {
     #endif

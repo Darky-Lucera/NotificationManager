@@ -58,7 +58,10 @@ struct Runner {
             NotificationManager::SendStoredNotificationsForThisThread();
         }
 
-        NotificationManager::GetDelegate(NotificationId::Hello).Add(this, &Runner::Hello);
+        NotificationManager::GetDelegate(NotificationId::Hello).Remove(this, &Runner::Hello);
+        if(NotificationManager::GetDelegate(NotificationId::Hello).GetNumDelegates() != 0) {
+            printf("Error: Delegate was not removed\n");
+        }
         NotificationManager::SendNotification(NotificationId::Dead, mId);
     }
 

@@ -48,7 +48,7 @@ namespace MindShake {
         public:
             static constexpr unsigned int   major = 1;
             static constexpr unsigned int   minor = 0;
-            static constexpr unsigned int   patch = 0;
+            static constexpr unsigned int   patch = 1;
 
         public:
             static Delegate &   GetDelegate(NotificationId id);
