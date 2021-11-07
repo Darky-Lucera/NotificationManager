@@ -46,6 +46,11 @@ namespace MindShake {
             using TID      = std::thread::id;
 
         public:
+            static constexpr unsigned int   major = 1;
+            static constexpr unsigned int   minor = 0;
+            static constexpr unsigned int   patch = 0;
+
+        public:
             static Delegate &   GetDelegate(NotificationId id);
             static void         SendNotification(NotificationId id, any data = int(0), bool overwrite = false);
 

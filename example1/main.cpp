@@ -12,12 +12,12 @@
 using MindShake::NotificationManager;
 using MindShake::NotificationId;
 
-#if __cplusplus >= 201703L
-using namespace std::chrono_literals;
+#if __cplusplus >= 201703L || (defined(_MSVC_LANG) && _MSVC_LANG >= 201703L)
+    using namespace std::chrono_literals;
 #else
-constexpr std::chrono::milliseconds operator"" ms(unsigned long long value) noexcept {
-    return std::chrono::milliseconds(value);
-}
+    constexpr std::chrono::milliseconds operator"" ms(unsigned long long value) noexcept {
+        return std::chrono::milliseconds(value);
+    }
 #endif
 
 // Global vars
