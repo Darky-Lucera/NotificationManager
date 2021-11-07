@@ -27,10 +27,12 @@ namespace MindShake {
     template <typename ...Args>
     class Delegate<void(Args...)> {
         public:
-            typedef void (              *TFunc)(Args...);
-            typedef void (UnknownClass::*TMethod)(Args...);
+            using TFunc   = void (              *)(Args...);
+            using TMethod = void (UnknownClass::*)(Args...);
 
         protected:
+            static size_t wrapperCounter;
+
             //-----------------------------
             struct Wrapper {
                                 Wrapper() = default;
@@ -52,7 +54,8 @@ namespace MindShake {
                     TMethod      method {};
                     TFunc        func;
                 };
-                Type    type = Type::Unknown;
+                size_t  id        = wrapperCounter++;
+                Type    type      = Type::Unknown;
                 bool    isEnabled = true;
             };
 
@@ -102,24 +105,35 @@ namespace MindShake {
                             Delegate() = default;
                             ~Delegate();
 
-            void            Add(std::nullptr_t)                                                 { } // avoid nullptr as lambda
-            void            Add(TFunc func)                                                     { if(func) mWrappers.emplace_back(new WrapperCFunc(func));                }
+            size_t          Add(std::nullptr_t)                                                 { return size_t(-1); } // avoid nullptr as lambda
+            size_t          Add(TFunc func) { 
+                if(func != nullptr) {
+                    auto wrapper = new WrapperCFunc(func);
+                    mWrappers.emplace_back(wrapper);
+                    return wrapper->id;
+                }
+
+                return size_t(-1);
+            }
             template <class Class>
-            void            Add(Class *object)                                                  { Add(object, &Class::operator());                      }
+            size_t          Add(Class *object)                                                  { return Add(object, &Class::operator());                      }
             template <class Class>
-            void            Add(Class *object, kMethod(method));
+            size_t          Add(Class *object, kMethod(method));
             template <class Class>
-            void            Add(Class *object, kMethod(method) const)                           { Add(object, kUnConst(method));                        }
+            size_t          Add(Class *object, kMethod(method) const)                           { return Add(object, kUnConst(method));                        }
             template <class Class>
-            void            Add(const Class *object)                                            { Add(unconst(object), &Class::operator());             }
+            size_t          Add(const Class *object)                                            { return Add(unconst(object), &Class::operator());             }
             template <class Class>
-            void            Add(const Class *object, kMethod(method))                           { Add(unconst(object), method);                         }
+            size_t          Add(const Class *object, kMethod(method))                           { return Add(unconst(object), method);                         }
             template <class Class>
-            void            Add(const Class *object, kMethod(method) const)                     { Add(unconst(object), method);                         }
+            size_t          Add(const Class *object, kMethod(method) const)                     { return Add(unconst(object), method);                         }
             // Hack to detect lambdas with captures
-            template <typename Lambda>
-            typename std::enable_if<!std::is_assignable<Lambda, Lambda>::value>::type   // Hack to detect lambdas with captures
-                            Add(const Lambda &lambda)                                           { mWrappers.emplace_back(new WrapperLambda<Lambda>(lambda)); }
+            template <typename Lambda, std::enable_if_t<!std::is_assignable_v<Lambda, Lambda>, bool> = true>
+            size_t          Add(const Lambda &lambda) { 
+                auto wrapper = new WrapperLambda<Lambda>(lambda);
+                mWrappers.emplace_back(wrapper);
+                return wrapper->id; 
+            }
 
             //--
             bool            Remove(std::nullptr_t, bool lazy=false)                             { return false;                                         }
@@ -142,6 +156,9 @@ namespace MindShake {
             //    static_assert(false, "You cannot remove a complex lambda");
             //    return -1;
             //}
+
+            //--
+            bool            RemoveById(size_t id, bool lazy=false);
 
             //--
             void            RemoveLazyDeleted();
@@ -186,6 +203,10 @@ namespace MindShake {
 
     //-------------------------------------
     template <typename ...Args>
+    size_t Delegate<void(Args...)>::wrapperCounter = 0;
+
+    //-------------------------------------
+    template <typename ...Args>
     inline
     Delegate<void(Args...)>::~Delegate() {
         for (auto &wrapper: mWrappers) {
@@ -198,10 +219,10 @@ namespace MindShake {
     //-------------------------------------
     template <typename ...Args>
     template <class Class>
-    inline void
+    inline size_t
     Delegate<void(Args...)>::Add(Class *object, void(Class::*method)(Args...)) {
         if(object == nullptr || method == nullptr)
-            return;
+            return size_t(-1);
 
         WrapperMethod   *wrapper = new WrapperMethod;
 
@@ -215,6 +236,21 @@ namespace MindShake {
     #endif
 
         mWrappers.emplace_back(wrapper);
+
+        return wrapper->id;
+    }
+
+    //-------------------------------------
+    template <typename ...Args>
+    bool 
+    Delegate<void(Args...)>::RemoveById(size_t id, bool lazy) {
+        for(size_t i=0; i<mWrappers.size(); ++i) {
+            if(mWrappers[i]->id == id) {
+                return RemoveIndex(i, lazy);
+            }
+        }
+
+        return false;
     }
 
     //-------------------------------------

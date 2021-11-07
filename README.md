@@ -22,6 +22,8 @@ Logger(NotificationId id, const any &data) {
 }
 
 NotificationManager::GetDelegate(NotificationId::Log).Add(&Logger);
+...
+NotificationManager::GetDelegate(NotificationId::Log).Remove(&Logger);
 ```
 
 ```cpp
@@ -50,7 +52,23 @@ NotificationManager::GetDelegate(NotificationId::Log)
 );
 ```
 
-_**Note:** I have to implement also my own wrapper for callables because I need to identify the callable in case the user wants to remove it, and ```std::function``` lacks the ```operator ==```._
+For the time being, complex lambdas cannot be removed directly. So we need to save an id in case we want to remove them.
+
+```cpp
+auto logger = [&logFile](NotificationId id, const any &data) {
+    const std::string &msg = any_cast<std::string>(data);
+    fprintf(logFile, "%s\n", msg.c_str());
+};
+
+auto delegate = NotificationManager::GetDelegate(NotificationId::Log);
+...
+auto id = delegate.Add(logger);
+...
+delegate.RemoveById(id);
+```
+
+_**Note:** I have had to implement my own wrapper for callables (```Delegate<...>```) since I needed to identify the callable in case the user wants to remove it, because ```std::function``` lacks the ```operator ==```._
+
 
 **```SendNotification(NotificationId id, std::any data, bool overwrite = false)```:** Allows sending a notification from anywhere, with whatever data. It also allows the user to overwrite pending notifications. For instance, It's uncommon that someone needs all the UI windows to reshape notifications, just the last one is enough.
 
@@ -96,13 +114,39 @@ void         DisableAutoSend();
 bool         GetAutoSend();
 ```
 
+## Extra: Delegates<...>
+
+Due to the fact that I had to implement my own wrapper for callables, users have the possibility to use them in their own projects as, for example, a simple signal/slot utility.
+
+```cpp
+struct Button {
+    ...
+    void OnClick() {
+        onPressed();
+    }
+
+    ...
+    MindShake::Delegate<void()> onPressed;
+};
+
+...
+
+Button btn;
+btn.onPressed.Add([]() { printf("Button was pressed"); });
+
+...
+
+btn.OnClick();
+
+```
+
 ## How to use it
 
-Just drop the files NotificationManager.h, NotificationManager.cpp and _NotificationId.h_ to your project (**notifications** is a good name for the folder containing them).
+Just drop the files **NotificationManager.h**, **NotificationManager.cpp** and _**NotificationId.h**_ to your project (**notifications** is a good name for the folder containing them).
 
 The **notifications** folder here contains an empty **NotificationId.h** file that you have to fill with your own notification ids.
 
-_Note: **example1** and **example2** have their own **NotificationId.h** files with different ids for each project._
+_Note: **example1**, **example2** and **example3** have their own **NotificationId.h** files with different ids for each project._
 
 Before exiting your program it is a good idea to call ```Clear()``` to free some resources.
 
