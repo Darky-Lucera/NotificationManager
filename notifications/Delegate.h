@@ -1,23 +1,47 @@
 #pragma once
 
 //-----------------------------------------------------------------------------
-// Copyright (C) 2021 Carlos Aragonés
+// Copyright (C) 2006-present Carlos Aragonés
 //
 // Distributed under the Boost Software License, Version 1.0.
 // See accompanying file LICENSE or copy at http://www.boost.org/LICENSE_1_0.txt
 //-----------------------------------------------------------------------------
 
 #include <cstdint>
+#include <cstddef>
 #include <vector>
-//#include <utility>
 #include <type_traits>
 #include <algorithm>
 
 //-------------------------------------
 namespace MindShake {
 
+    #define kUnConst(method)        reinterpret_cast<void(Class::*)(Args...)>(method)
+    #define kMethod(method)         void(Class::*method)(Args...)
+    #define kOnlyClassSizeT         typename std::enable_if<std::is_class<Class>::value, size_t>::type
+    #define kOnlyClassPtrD          typename std::enable_if<std::is_class<Class>::value, ptrdiff_t>::type
+
+    // Utils
     //-------------------------------------
-    class UnknownClass;
+    template <class Class>
+    using Method = void (Class:: *)();
+
+    template <class Class>
+    using ConstMethod = void (Class:: *)() const;
+
+    //-------------------------------------
+    template <class Class>
+    inline Method<Class>
+    getNonConstMethod(Method<Class> method) {
+        return method;
+    }
+
+    //-------------------------------------
+    template <class Class>
+    inline ConstMethod<Class>
+    getConstMethod(ConstMethod<Class> method) {
+        return method;
+    }
 
     //-------------------------------------
     template <typename T>
@@ -27,8 +51,10 @@ namespace MindShake {
     template <typename ...Args>
     class Delegate<void(Args...)> {
         public:
-            using TFunc   = void (              *)(Args...);
-            using TMethod = void (UnknownClass::*)(Args...);
+            class UnknownClass;
+
+            using TFunc         = void (              *)(Args...);
+            using TMethod       = void (UnknownClass::*)(Args...);  // Longest method signature
 
         protected:
             static size_t wrapperCounter;
@@ -36,12 +62,12 @@ namespace MindShake {
             //-----------------------------
             struct Wrapper {
                                 Wrapper() = default;
-                                Wrapper(TFunc f) : func(f) {}
+                explicit        Wrapper(TFunc f) : func(f) {}
                 virtual         ~Wrapper() { object = nullptr; func = nullptr;     }
 
-                virtual void    operator()(Args&&... args) const {
-                    if(object != nullptr)       ((object)->*(method))(std::forward<Args>(args)...);
-                    else if(func != nullptr)    (*func)(std::forward<Args>(args)...);
+                virtual void    operator()(const Args&... args) const {
+                    if (object != nullptr)       ((object)->*(method))(args...);
+                    else if (func != nullptr)    (*func)(args...);
                 }
 
                 void            ToBeRemoved() { object = nullptr, method = {}, isEnabled = false; }
@@ -61,11 +87,11 @@ namespace MindShake {
 
             //-----------------------------
             struct WrapperCFunc : Wrapper {
-                        WrapperCFunc(TFunc f) : Wrapper(f) { Wrapper::type = Wrapper::Type::Function; }
+                explicit    WrapperCFunc(TFunc f) : Wrapper(f) { Wrapper::type = Wrapper::Type::Function; }
 
-                void    operator()(Args&&... args) const override {
+                void        operator()(const Args&... args) const override {
                     if(Wrapper::func != nullptr)
-                        (*Wrapper::func)(std::forward<Args>(args)...);
+                        (*Wrapper::func)(args...);
                 }
             };
 
@@ -73,9 +99,9 @@ namespace MindShake {
             struct WrapperMethod : Wrapper {
                         WrapperMethod() { Wrapper::type = Wrapper::Type::Method; }
 
-                void    operator()(Args&&... args) const override {
+                void    operator()(const Args&... args) const override {
                     if(Wrapper::object != nullptr)
-                        ((Wrapper::object)->*(Wrapper::method))(std::forward<Args>(args)...);
+                        ((Wrapper::object)->*(Wrapper::method))(args...);
                 }
             };
 
@@ -83,11 +109,11 @@ namespace MindShake {
             //-----------------------------
             template <typename Lambda>
             struct WrapperLambda : Wrapper {
-                WrapperLambda(const Lambda &l) : lambda(l) { Wrapper::type = Wrapper::Type::Lambda; }
+                explicit WrapperLambda(const Lambda &l) : lambda(l) { Wrapper::type = Wrapper::Type::Lambda; }
 
-                void    operator()(Args&&... args) const override {
+                void    operator()(const Args&... args) const override {
                     if(Wrapper::isEnabled)
-                        lambda(std::forward<Args>(args)...);
+                        lambda(args...);
                 }
 
                 Lambda  lambda;
@@ -96,60 +122,73 @@ namespace MindShake {
         // Some helpers
         protected:
             template <class Class>
-            Class *         unconst(const Class *object)                                        { return const_cast<Class *>(object);                   }
-            // I cannot do this with a method
-            #define kUnConst(method)                                                            reinterpret_cast<void(Class::*)(Args...)>(method)
-            #define kMethod(method)                                                             void(Class::*method)(Args...)
+            static Class *  unconst(const Class *object)                                        { return const_cast<Class *>(object);                           }
 
         public:
                             Delegate() = default;
-                            ~Delegate();
+            virtual         ~Delegate();
 
-            size_t          Add(std::nullptr_t)                                                 { return size_t(-1); } // avoid nullptr as lambda
-            size_t          Add(TFunc func) { 
-                if(func != nullptr) {
-                    auto wrapper = new WrapperCFunc(func);
-                    mWrappers.emplace_back(wrapper);
-                    return wrapper->id;
-                }
+            // avoid nullptr as lambda
+            size_t          Add(std::nullptr_t)                                                 { return size_t(-1);                                            }
 
-                return size_t(-1);
-            }
+            size_t          Add(TFunc func);
+
             template <class Class>
-            size_t          Add(Class *object)                                                  { return Add(object, &Class::operator());                      }
+            kOnlyClassSizeT Add(Class *object)                                                  { return Add(object, getNonConstMethod(&Class::operator()));    }
             template <class Class>
-            size_t          Add(Class *object, kMethod(method));
+            kOnlyClassSizeT Add(const Class *object)                                            { return Add(object, getConstMethod(&Class::operator()));       }
             template <class Class>
-            size_t          Add(Class *object, kMethod(method) const)                           { return Add(object, kUnConst(method));                        }
+            kOnlyClassSizeT Add(Class *object, kMethod(method));
             template <class Class>
-            size_t          Add(const Class *object)                                            { return Add(unconst(object), &Class::operator());             }
+            kOnlyClassSizeT Add(const Class *object, kMethod(method))                           { return Add(unconst(object), method);                          }
             template <class Class>
-            size_t          Add(const Class *object, kMethod(method))                           { return Add(unconst(object), method);                         }
+            kOnlyClassSizeT Add(Class *object, kMethod(method) const)                           { return Add(object, kUnConst(method));                         }
             template <class Class>
-            size_t          Add(const Class *object, kMethod(method) const)                     { return Add(unconst(object), method);                         }
+            kOnlyClassSizeT Add(const Class *object, kMethod(method) const)                     { return Add(unconst(object), kUnConst(method));                }
+            // Mimic std::bind order
+            template <class Class>
+            kOnlyClassSizeT Add(kMethod(method), Class *object)                                 { return Add(object, method);                                   }
+            template <class Class>
+            kOnlyClassSizeT Add(kMethod(method), const Class *object)                           { return Add(unconst(object), method);                          }
+            template <class Class>
+            kOnlyClassSizeT Add(kMethod(method) const, Class *object)                           { return Add(object, kUnConst(method));                         }
+            template <class Class>
+            kOnlyClassSizeT Add(kMethod(method) const, const Class *object)                     { return Add(unconst(object), kUnConst(method));                }
+
             // Hack to detect lambdas with captures
-            template <typename Lambda, std::enable_if_t<!std::is_assignable_v<Lambda, Lambda>, bool> = true>
-            size_t          Add(const Lambda &lambda) { 
+            template <typename Lambda, typename std::enable_if<!std::is_assignable<Lambda, Lambda>::value, bool>::type = true>
+            size_t          Add(const Lambda &lambda) {
                 auto wrapper = new WrapperLambda<Lambda>(lambda);
                 mWrappers.emplace_back(wrapper);
-                return wrapper->id; 
+                return wrapper->id;
             }
 
             //--
-            bool            Remove(std::nullptr_t, bool lazy=false)                             { return false;                                         }
-            bool            Remove(TFunc func, bool lazy=false)                                 { return RemoveIndex(Find(func), lazy);                 }
+            bool            Remove(std::nullptr_t, bool lazy=false)                             { return false;                                                 }
+
+            bool            Remove(TFunc func, bool lazy=false)                                 { return RemoveIndex(Find(func), lazy);                         }
+
             template <class Class>
-            bool            Remove(Class *object, bool lazy=false)                              { return Remove(object, &Class::operator(), lazy);      }
+            bool            Remove(Class *object, bool lazy=false)                              { return RemoveIndex(Find(object, getNonConstMethod(&Class::operator())), lazy);        }
             template <class Class>
-            bool            Remove(Class *object, kMethod(method), bool lazy=false)             { return RemoveIndex(Find(object, method), lazy);       }
+            bool            Remove(const Class *object, bool lazy=false)                        { return RemoveIndex(Find(unconst(object), getConstMethod(&Class::operator())), lazy);  }
             template <class Class>
-            bool            Remove(Class *object, kMethod(method) const, bool lazy=false)       { return Remove(object, kUnConst(method), lazy);        }
+            bool            Remove(Class *object, kMethod(method), bool lazy=false)             { return RemoveIndex(Find(object, method), lazy);               }
             template <class Class>
-            bool            Remove(const Class *object, bool lazy=false)                        { return Remove(unconst(object), &Class::operator(), lazy); }
+            bool            Remove(const Class *object, kMethod(method), bool lazy=false)       { return RemoveIndex(Find(unconst(object), method), lazy);      }
             template <class Class>
-            bool            Remove(const Class *object, kMethod(method), bool lazy=false)       { return Remove(unconst(object, method, lazy));         }
+            bool            Remove(Class *object, kMethod(method) const, bool lazy=false)       { return RemoveIndex(Find(object, kUnConst(method)), lazy);     }
             template <class Class>
-            bool            Remove(const Class *object, kMethod(method) const, bool lazy=false) { return Remove(unconst(object), kUnConst(method), lazy);   }
+            bool            Remove(const Class *object, kMethod(method) const, bool lazy=false) { return RemoveIndex(Find(unconst(object), kUnConst(method)), lazy);    }
+            // Mimic std::bind order
+            template <class Class>
+            bool            Remove(kMethod(method), Class *object, bool lazy=false)             { return RemoveIndex(Find(object, method), lazy);               }
+            template <class Class>
+            bool            Remove(kMethod(method), const Class *object, bool lazy=false)       { return RemoveIndex(Find(unconst(object), method), lazy);      }
+            template <class Class>
+            bool            Remove(kMethod(method) const, Class *object, bool lazy=false)       { return RemoveIndex(Find(object, kUnConst(method)), lazy);     }
+            template <class Class>
+            bool            Remove(kMethod(method) const, const Class *object, bool lazy=false) { return RemoveIndex(Find(unconst(object), kUnConst(method)), lazy);    }
             // Hack to detect lambdas with captures (and return a value)
             //template <typename Lambda, std::enable_if_t<!std::is_assignable_v<Lambda, Lambda>, bool> = true>
             //bool            Remove(const Lambda &l) {
@@ -163,35 +202,51 @@ namespace MindShake {
             //--
             void            RemoveLazyDeleted();
 
-            //--
-            ptrdiff_t       Find(TFunc func) const;
+            void            Clear();
+
+            // The issue with perfect forwarding in this context is that we can not pass rValues to more than one function.
+            // So, we need the other version of operator() to pass const references.
+            // In any case, the Wrappers cannot have both operators() because they are virtual functions,
+            // and a template function cannot be virtual.
+            template <typename Dummy = void>
+            typename std::enable_if<sizeof...(Args) != 0, Dummy>::type
+                            operator()(Args&&... args) const                                    { for (const auto *wrapper : mWrappers) (*wrapper)(std::forward<Args>(args)...); }
+
+            void            operator()(const Args&... args) const                               { for (const auto *wrapper : mWrappers) (*wrapper)(args...);    }
+
+            size_t          GetNumDelegates() const                                             { return mWrappers.size() - mToRemove.size();               }
+
+        protected:
+            ptrdiff_t       Find(std::nullptr_t)                                                { return -1;                                                }
+
+            ptrdiff_t       Find(const TFunc func) const;
+
             template <class Class>
-            ptrdiff_t       Find(Class *object) const                                           { return Find(object, &Class::operator());                  }
+            kOnlyClassPtrD  Find(Class *object) const                                           { return Find(object, getNonConstMethod(&Class::operator()));   }
             template <class Class>
-            ptrdiff_t       Find(Class *object, kMethod(method)) const;
+            kOnlyClassPtrD  Find(const Class *object) const                                     { return Find(object, getConstMethod(&Class::operator()));      }
             template <class Class>
-            ptrdiff_t       Find(Class *object, kMethod(method) const) const                    { return Find(object, kUnConst(method));                    }
+            kOnlyClassPtrD  Find(Class *object, kMethod(method)) const;
             template <class Class>
-            ptrdiff_t       Find(const Class *object) const                                     { return Find(unconst(object), &Class::operator());         }
+            kOnlyClassPtrD  Find(Class *object, kMethod(method) const) const                    { return Find(object, kUnConst(method));                    }
             template <class Class>
-            ptrdiff_t       Find(const Class *object, kMethod(method)) const                    { return Find(unconst(object, method));                     }
+            kOnlyClassPtrD  Find(const Class *object, kMethod(method)) const                    { return Find(unconst(object), method);                     }
             template <class Class>
-            ptrdiff_t       Find(const Class *object, kMethod(method) const) const              { return Find(unconst(object), kUnConst(method));           }
+            kOnlyClassPtrD  Find(const Class *object, kMethod(method) const) const              { return Find(unconst(object), kUnConst(method));           }
+            template <class Class>
+            kOnlyClassPtrD  Find(kMethod(method), Class *object) const                          { return Find(object, method);                              }
+            template <class Class>
+            kOnlyClassPtrD  Find(kMethod(method) const, Class *object) const                    { return Find(object, kUnConst(method));                    }
+            template <class Class>
+            kOnlyClassPtrD  Find(kMethod(method), const Class *object) const                    { return Find(unconst(object), method);                     }
+            template <class Class>
+            kOnlyClassPtrD  Find(kMethod(method) const, const Class *object) const              { return Find(unconst(object), kUnConst(method));           }
             // Hack to detect lambdas with captures (and return a value)
             //template <typename Lambda, std::enable_if_t<!std::is_assignable_v<Lambda, Lambda>, bool> = true>
             //ptrdiff_t       Find(const Lambda &l) {
             //    static_assert(false, "You cannot find a complex lambda");
             //    return -1;
             //}
-
-            void            Clear();
-
-            void            operator()(Args... args) const                                      { for (auto wrapper : mWrappers) (*wrapper)(std::forward<Args>(args)...);    }
-
-            size_t          GetNumDelegates() const                                             { return mWrappers.size() - mToRemove.size();           }
-
-            #undef kUnConst
-            #undef kMethod
 
         protected:
             bool            RemoveIndex(ptrdiff_t idx, bool lazy);
@@ -218,21 +273,34 @@ namespace MindShake {
 
     //-------------------------------------
     template <typename ...Args>
-    template <class Class>
     inline size_t
+    Delegate<void(Args...)>::Add(TFunc func) {
+        if(func != nullptr) {
+            auto wrapper = new WrapperCFunc(func);
+            mWrappers.emplace_back(wrapper);
+            return wrapper->id;
+        }
+
+        return size_t(-1);
+    }
+
+    //-------------------------------------
+    template <typename ...Args>
+    template <class Class>
+    inline kOnlyClassSizeT
     Delegate<void(Args...)>::Add(Class *object, void(Class::*method)(Args...)) {
         if(object == nullptr || method == nullptr)
             return size_t(-1);
 
         WrapperMethod   *wrapper = new WrapperMethod;
 
-        wrapper->object   = reinterpret_cast<UnknownClass *>(object);
+        wrapper->object = reinterpret_cast<UnknownClass *>(object);
 
     #if defined(_MSC_VER)
-        memset(((void *) &wrapper->method), 0, sizeof(TMethod));
-        memcpy(((void *) &wrapper->method), ((void *) &method), sizeof(method));
+        memset(reinterpret_cast<void *>(&wrapper->method), 0, sizeof(TMethod));
+        memcpy(reinterpret_cast<void *>(&wrapper->method), reinterpret_cast<void *>(&method), sizeof(method));
     #else
-        wrapper->method  = reinterpret_cast<TMethod>(method);
+        wrapper->method = reinterpret_cast<TMethod>(method);
     #endif
 
         mWrappers.emplace_back(wrapper);
@@ -242,7 +310,7 @@ namespace MindShake {
 
     //-------------------------------------
     template <typename ...Args>
-    bool 
+    inline bool
     Delegate<void(Args...)>::RemoveById(size_t id, bool lazy) {
         for(size_t i=0; i<mWrappers.size(); ++i) {
             if(mWrappers[i]->id == id) {
@@ -255,7 +323,7 @@ namespace MindShake {
 
     //-------------------------------------
     template <typename ...Args>
-    bool
+    inline bool
     Delegate<void(Args...)>::RemoveIndex(ptrdiff_t idx, bool lazy) {
         if(idx >= 0) {
             if(lazy == false) {
@@ -273,11 +341,11 @@ namespace MindShake {
 
     //-------------------------------------
     template <typename ...Args>
-    ptrdiff_t
-    Delegate<void(Args...)>::Find(TFunc func) const {
+    inline ptrdiff_t
+    Delegate<void(Args...)>::Find(const TFunc func) const {
         ptrdiff_t   i = 0;
 
-        for(auto &wrapper : mWrappers) {
+        for(const auto *wrapper : mWrappers) {
             if(wrapper->func == func) {
                 return i;
             }
@@ -289,14 +357,14 @@ namespace MindShake {
     //-------------------------------------
     template <typename ...Args>
     template <class Class>
-    ptrdiff_t
+    inline kOnlyClassPtrD
     Delegate<void(Args...)>::Find(Class *object, void(Class::*method)(Args...)) const {
         ptrdiff_t   i = 0;
 
-        for(auto &wrapper : mWrappers) {
+        for(const auto *wrapper : mWrappers) {
             if(wrapper->object == reinterpret_cast<UnknownClass *>(object)) {
     #if defined(_MSC_VER)
-                if(memcmp(&wrapper->method, (void *) &method, sizeof(method)) == 0) {
+                if(memcmp(&wrapper->method, reinterpret_cast<void *>(&method), sizeof(method)) == 0) {
     #else
                 if(wrapper->method == reinterpret_cast<TMethod>(method)) {
     #endif
@@ -305,6 +373,7 @@ namespace MindShake {
             }
             ++i;
         }
+
         return -1;
     }
 
@@ -327,11 +396,16 @@ namespace MindShake {
     template <typename ...Args>
     inline void
     Delegate<void(Args...)>::Clear() {
-        for(auto &w : mWrappers) {
+        for(auto *w : mWrappers) {
             delete w;
         }
         mWrappers.clear();
         mToRemove.clear();
     }
+
+    #undef kUnConst
+    #undef kMethod
+    #undef kOnlyClassSizeT
+    #undef kOnlyClassPtrD
 
 } // end of namespace
