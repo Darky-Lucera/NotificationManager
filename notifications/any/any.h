@@ -19,7 +19,8 @@
 #include <typeinfo>
 #include <type_traits>
 #include <stdexcept>
-
+#include <utility>
+#include <new>
 
 #if defined(PARTICLE)
 #if !defined(__cpp_exceptions) && !defined(ANY_IMPL_NO_EXCEPTIONS) && !defined(ANY_IMPL_EXCEPTIONS)
@@ -42,6 +43,16 @@
 
 namespace linb
 {
+template<typename T>
+struct in_place_type_t
+{
+    constexpr explicit in_place_type_t() noexcept = default;
+};
+
+#if defined (__cpp_variable_templates) || defined(_MSC_VER)
+template<typename T>
+constexpr in_place_type_t<T> in_place_type{};
+#endif
 
 class bad_any_cast : public std::bad_cast
 {
@@ -56,7 +67,7 @@ class any final
 {
 public:
     /// Constructs an object of type any with an empty state.
-    any() :
+    any() noexcept :
         vtable(nullptr)
     {
     }
@@ -101,6 +112,17 @@ public:
         this->construct(std::forward<ValueType>(value));
     }
 
+    template <typename ValueType, typename... Args>
+    explicit any(in_place_type_t<ValueType>, Args&&... args)
+    {
+        this->emplace_construct<ValueType>(std::forward<Args>(args)...);
+    }
+
+    template <typename ValueType, typename U, typename... Args>
+    explicit any(in_place_type_t<ValueType>, std::initializer_list<U> il, Args&&... args)
+    {
+        this->emplace_construct<ValueType>(il, std::forward<Args>(args)...);
+    }
     /// Has the same effect as any(rhs).swap(*this). No effects if an exception is thrown.
     any& operator=(const any& rhs)
     {
@@ -114,7 +136,7 @@ public:
     /// but otherwise unspecified state.
     any& operator=(any&& rhs) noexcept
     {
-        any(std::move(rhs)).swap(*this);
+        std::move(rhs).swap(*this);
         return *this;
     }
 
@@ -198,7 +220,7 @@ private: // Storage and Virtual Method Table
     /// Base VTable specification.
     struct vtable_type
     {
-        // Note: The caller is responssible for doing .vtable = nullptr after destructful operations
+        // Note: The caller is responsible for doing .vtable = nullptr after destructful operations
         // such as destroy() and/or move().
 
 #ifndef ANY_IMPL_NO_RTTI
@@ -252,7 +274,7 @@ private: // Storage and Virtual Method Table
 
         static void swap(storage_union& lhs, storage_union& rhs) noexcept
         {
-            // just exchage the storage pointers.
+            // just exchange the storage pointers.
             std::swap(lhs.dynamic, rhs.dynamic);
         }
     };
@@ -373,6 +395,28 @@ private:
     storage_union storage; // on offset(0) so no padding for align
     vtable_type*  vtable;
 
+    template <typename T, typename... Args>
+    typename std::enable_if<requires_allocation<T>::value>::type do_emplace(Args&&... args)
+    {
+        storage.dynamic = new T(std::forward<Args>(args)...);
+    }
+
+    template <typename T, typename... Args>
+    typename std::enable_if<!requires_allocation<T>::value>::type do_emplace(Args&&... args)
+    {
+        new (&storage.stack) T(std::forward<Args>(args)...);
+    }
+
+    template <typename ValueType, typename... Args>
+    void emplace_construct(Args&&... args)
+    {
+        using T = typename std::decay<ValueType>::type;
+
+        this->vtable = vtable_for_type<T>();
+
+        do_emplace<T>(std::forward<Args>(args)...);
+    }
+
     template<typename ValueType, typename T>
     typename std::enable_if<requires_allocation<T>::value>::type
     do_construct(ValueType&& value)
@@ -492,14 +536,22 @@ inline ValueType* any_cast(any* operand) noexcept
         return nullptr;
 }
 
+inline void swap(any& lhs, any& rhs) noexcept
+{
+    lhs.swap(rhs);
 }
 
-namespace std
+template <typename T, typename... Args>
+any make_any(Args&&... args)
 {
-    inline void swap(linb::any& lhs, linb::any& rhs) noexcept
-    {
-        lhs.swap(rhs);
-    }
+    return any(in_place_type_t<T>{}, std::forward<Args>(args)...);
+}
+
+template <typename T, typename U, typename... Args>
+any make_any(std::initializer_list<U> il, Args&&... args)
+{
+    return any(in_place_type_t<T>{}, il, std::forward<Args>(args)...);
+}
 }
 
 #endif
