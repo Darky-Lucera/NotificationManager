@@ -1,8 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <cstdio>
 #include <random>
-#include <functional>
 #include <chrono>
 #include <string>
 #include "notifications/NotificationManager.h"
@@ -16,11 +16,6 @@ using MindShake::NotificationId;
 constexpr uint32_t  kMaxValue = 16;
 
 //-------------------------------------
-std::default_random_engine              gGenerator;
-std::uniform_int_distribution<uint32_t> gDistribution(1, kMaxValue);
-auto                                    getRandom = std::bind(gDistribution, gGenerator);
-
-//-------------------------------------
 struct Agent {
     using time_point = std::chrono::time_point<std::chrono::system_clock>;
 
@@ -32,18 +27,19 @@ struct Agent {
     Run() {
         char buffer[256];
 
-        if (mHP < 0)
+        if (!IsAlive()) {
             return false;
+        }
 
-        if(Time() - mTimeStamp > std::chrono::milliseconds(mSpeed)) {
+        if (Time() - mTimeStamp > std::chrono::milliseconds(mSpeed)) {
             mTimeStamp = Time();
-            if(mEnemy != nullptr) {
-                if(true) {//DiceRoller() > 5) {
+            if (mEnemy != nullptr && mEnemy->IsAlive()) {
+                if (true) {//DiceRoller() > 5) {
                     float damage = float(DiceRoller()) / kMaxValue * (mDamage * mDamage) / (mDamage + mEnemy->mDefense);
                     snprintf(buffer, sizeof(buffer), "%s hits %s causing %.2f damage.", mName.c_str(), mEnemy->mName.c_str(), damage);
                     NotificationManager::SendNotification(NotificationId::Log, std::string(buffer));
                     mEnemy->mHP -= damage;
-                    if(mEnemy->mHP < 0) {
+                    if (!mEnemy->IsAlive()) {
                         snprintf(buffer, sizeof(buffer), "%s is dead.", mEnemy->mName.c_str());
                         NotificationManager::SendNotification(NotificationId::Log, std::string(buffer));
                         NotificationManager::SendNotification(NotificationId::Kill, mEnemy);
@@ -55,12 +51,17 @@ struct Agent {
         }
 
         return false;
-    };
+    }
 
-    void                SetEnemy(Agent *other) { mEnemy = other; }
+    bool                IsAlive() const         { return mHP > 0; }
+
+    void                SetEnemy(Agent *other)  { mEnemy = other; }
 
     static uint32_t     DiceRoller() {
-        return getRandom();
+        static std::default_random_engine               generator;
+        static std::uniform_int_distribution<uint32_t>  distribution(1, kMaxValue);
+
+        return distribution(generator);
     }
 
     static time_point   Time() {

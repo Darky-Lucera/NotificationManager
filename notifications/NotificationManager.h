@@ -11,6 +11,7 @@
 #include <unordered_map>
 #include <thread>
 #include <mutex>
+#include <atomic>
 #if __cplusplus >= 201703L || (defined(_MSVC_LANG) && _MSVC_LANG >= 201703L)
     #include <any>
     using std::any;
@@ -32,22 +33,24 @@ namespace MindShake {
     enum class NotificationId;
 
     //-------------------------------------
-    class fake_mutex : public std::mutex {
-        public:
-            void lock()     { }
-            bool try_lock() { return true; }
-            void unlock()   { }
+    // The delegate that GetDelegate returns. Users can Add and Remove functions, but only the
+    // NotificationManager can call it, so every notification goes through SendNotification.
+    class NotificationDelegate : public MindShake::Delegate<void(NotificationId, const any &)> {
+        using Base = MindShake::Delegate<void(NotificationId, const any &)>;
+        using Base::operator();
+
+        friend class NotificationManager;
     };
 
     //-------------------------------------
     class NotificationManager {
         public:
-            using Delegate = MindShake::Delegate<void(NotificationId, const any &)>;
+            using Delegate = NotificationDelegate;
             using TID      = std::thread::id;
 
         public:
             static constexpr unsigned int   major = 1;
-            static constexpr unsigned int   minor = 1;
+            static constexpr unsigned int   minor = 2;
             static constexpr unsigned int   patch = 0;
 
         public:
@@ -56,35 +59,55 @@ namespace MindShake {
 
             static void         SendStoredNotificationsForThisThread();
 
+            // Removes the functions and the pending notifications of the calling thread. It is safe to call it
+            // from a callback, and the references returned by GetDelegate stay valid.
+            static void         ClearThisThread();
+
         // Configuration
         public:
-            // Use a mutex to protect the critical parts or disable it to reduce the mutex overhead
-            // in case the user knows that it is safe or is working on a monothread application.
+            // Use a mutex to protect the critical parts or disable it to reduce
+            // the mutex overhead in case the user knows that it is safe or
+            // is working on a monothread application.
             // Use it carefully.
+            // Change it before any other thread uses the NotificationManager.
             static void         SetMT(bool set)         { mEnableMT = set;   }
             static void         EnableMT()              { mEnableMT = true;  }
             static void         DisableMT()             { mEnableMT = false; }
             static bool         GetMT()                 { return mEnableMT;  }
 
-            // Automatically send notifications on call to SendNotification or wait until the user
-            // calls SendStoredNotificationsForThisThread.
+            // Automatically send notifications on call to SendNotification or
+            // wait until the user calls SendStoredNotificationsForThisThread.
             // This could reduce interruptions in a monothread applications.
-            static void         SetAutoSend(bool set)   { mAutoSend = set;   }
-            static void         EnableAutoSend()        { mAutoSend = true;  }
-            static void         DisableAutoSend()       { mAutoSend = false; }
-            static bool         GetAutoSend()           { return mAutoSend;  }
+            static void         SetAutoSend(bool set)   { mAutoSend.store(set, std::memory_order_relaxed);   }
+            static void         EnableAutoSend()        { mAutoSend.store(true, std::memory_order_relaxed);  }
+            static void         DisableAutoSend()       { mAutoSend.store(false, std::memory_order_relaxed); }
+            static bool         GetAutoSend()           { return mAutoSend.load(std::memory_order_relaxed);  }
 
         // Finalize
         public:
+            // Removes everything.
+            // It destroys the delegates, so call it only when no other thread uses
+            // the NotificationManager, never from a callback, and do not use the
+            // references returned by GetDelegate afterwards.
             static void         Clear();
 
         protected:
-            static std::mutex & GetMutex()  { return mEnableMT ? mMutex : mFakeMutex; }
+            static std::unique_lock<std::mutex> Lock() {
+                std::unique_lock<std::mutex> lock(mMutex, std::defer_lock);
+                if (mEnableMT) {
+                    lock.lock();
+                }
+                return lock;
+            }
 
         protected:
-            static void         StoreTIDData(NotificationId id, const any &data, bool overwrite);
+            static void         StoreTIDData(NotificationId id, const any &data, bool overwrite, bool skipThisThread);
+
+            static void         RemoveThread(TID tid);
 
         private:
+            struct ThreadCleaner;
+
                                 NotificationManager()                            = delete;
             virtual             ~NotificationManager()                           = delete;
                                 NotificationManager(const NotificationManager &) = delete;
@@ -99,12 +122,11 @@ namespace MindShake {
             using TIDData  = std::unordered_map<TID, NotData>;
 
         protected:
-            static TIDMap       mTIDNotifications;
-            static TIDData      mTIDData;
-            static std::mutex   mMutex;
-            static fake_mutex   mFakeMutex;
-            static bool         mEnableMT;
-            static bool         mAutoSend;
+            static TIDMap               mTIDNotifications;
+            static TIDData              mTIDData;
+            static std::mutex           mMutex;
+            static bool                 mEnableMT;
+            static std::atomic<bool>    mAutoSend;
     };
 
 } // end of namespace

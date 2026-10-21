@@ -12,7 +12,7 @@ It was also successfully ported to _C#_ to be able to use it with _Unity_ and to
 
 ## User Interface
 
-**```GetDelegate(NotificationId id)```:** Gets the delegate **_for the current thread_**. With this, you can Add or Remove 'Callables' (functions, methods, or lambdas) to the specified notification id.
+**```GetDelegate(NotificationId id)```:** Gets the delegate **_for the current thread_**. With this, you can Add or Remove 'Callables' (functions, methods, or lambdas) to the specified notification id. You cannot call it directly: send notifications with `SendNotification`, so they also reach the other threads.
 
 ```cpp
 void
@@ -60,7 +60,7 @@ auto logger = [&logFile](NotificationId id, const any &data) {
     fprintf(logFile, "%s\n", msg.c_str());
 };
 
-auto delegate = NotificationManager::GetDelegate(NotificationId::Log);
+auto &delegate = NotificationManager::GetDelegate(NotificationId::Log);
 ...
 auto id = delegate.Add(logger);
 ...
@@ -82,14 +82,26 @@ NotificationManager::SendNotification(NotificationId::EnemyKilled, enemy);
 NotificationManager::SendNotification(NotificationId::Reshape, std::tuple(width, height));
 ```
 
+_**Note:** If a callback sends the same NotificationId that it is handling, in the same thread, the current thread does not receive that new notification. Other threads still receive it, because a `Delegate` ignores calls made while it is running (see the [Delegate](https://github.com/Darky-Lucera/delegate) README)._
+
 **```SendStoredNotificationsForThisThread()```:** As it is not possible to interrupt a thread while executing, every thread must call this function at the point the user desire to receive the pending notifications. Also, it's interesting that you call this in the main thread to get notifications sent from different threads.
 
 ```cpp
-while(keepRunning) {
+while (keepRunning) {
     ...
     NotificationManager::SendStoredNotificationsForThisThread();
     ...
 }
+```
+
+**When a thread ends**, the NotificationManager removes its delegates and the notifications waiting for it. So a finished thread does not keep collecting notifications, and a new thread does not inherit them.
+
+While a thread is running, it keeps receiving the notifications of every id it called `GetDelegate` for, even if it removed all its functions. They are dropped when the thread calls `SendStoredNotificationsForThisThread`. A thread that stops listening but keeps running should call `ClearThisThread`.
+
+**```ClearThisThread()```:** Removes all the functions and the pending notifications of the calling thread. It is safe to call it from a callback, and the references returned by `GetDelegate` stay valid, so the thread can add new functions later.
+
+```cpp
+NotificationManager::ClearThisThread();
 ```
 
 ## Configuration
@@ -148,11 +160,13 @@ The **notifications** folder here contains an empty **NotificationId.h** file th
 
 _Note: **example1**, **example2** and **example3** have their own **NotificationId.h** files with different ids for each project._
 
-Before exiting your program it is a good idea to call ```Clear()``` to free some resources.
+You do not need to call anything before exiting your program: each thread removes its own data when it ends. To reset the whole NotificationManager, call ```Clear()```:
 
 ```cpp
 NotificationManager::Clear();
 ```
+
+`Clear()` destroys the delegates of all the threads. So call it only when no other thread uses the NotificationManager, never from a callback, and do not use the references returned by `GetDelegate` afterwards. To clear only the current thread, use `ClearThisThread()`, which does not have these limits.
 
 ## FAQ
 

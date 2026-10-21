@@ -1,103 +1,159 @@
-cmake_minimum_required(VERSION 3.10)
-project(NotificationCenter)
+cmake_minimum_required(VERSION 3.16)
+project(NotificationCenter VERSION 1.2.0 LANGUAGES CXX)
 
-# C++ version
+# Options
 #--------------------------------------
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
-
-#--------------------------------------
-set_property(GLOBAL PROPERTY USE_FOLDERS ON)
-
-# Compiler flags
-#--------------------------------------
-if(MSVC)
-    add_definitions(-D_CRT_SECURE_NO_WARNINGS)
-    # Security check
-    add_compile_options(/GS)
-    # Function level linking
-    add_compile_options(/Gy)
-    # Exceptions
-    add_compile_options(/EHsc)
-    # Enable Minimal Rebuild (required for Edit and Continue)
-    add_compile_options(/Gm)
-    # SDL checks 2015+
-    if(MSVC_VERSION GREATER_EQUAL 1900)
-        add_compile_options(/sdl)
-    endif()
-    add_compile_options(/fp:fast)
-    # Runtime library
-    add_compile_options("$<IF:$<CONFIG:Debug>,/MDd,/MD>")
-    # Program database for edit and continue
-    add_compile_options("$<IF:$<CONFIG:Debug>,/ZI,/Zi>")
-    # Optimizations
-    add_compile_options("$<IF:$<CONFIG:Debug>,/Od,/O2>")
-    # Inline function expansion
-    add_compile_options("$<IF:$<CONFIG:Debug>,/Ob0,/Ob2>")
-    # Basic runtime checks
-    add_compile_options("$<$<CONFIG:Debug>:/RTC1>")
-    # Enable intrinsics
-    add_compile_options("$<$<CONFIG:RELEASE>:/Oi>")
-    # Force Visual Studio to actualize __cplusplus version macro
-    add_compile_options(/Zc:__cplusplus)
+# A project that adds this one with add_subdirectory only builds the library, unless it asks for more.
+# PROJECT_IS_TOP_LEVEL would do the same, but it needs CMake 3.21.
+if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    set(NOTIFICATIONMANAGER_IS_TOP_LEVEL ON)
 else()
-    add_compile_options("$<$<CONFIG:Debug>:-g>")
-    add_compile_options("$<IF:$<CONFIG:Debug>,-O0,-O2>")
-    add_compile_options(-Wall -Wextra)
-    add_compile_options(-Wno-switch -Wno-unused-function -Wno-unused-parameter)
-    add_compile_options(-ffast-math)
-    if (UNIX)
-        add_compile_options(-pthread)
-        link_libraries(-lpthread)
+    set(NOTIFICATIONMANAGER_IS_TOP_LEVEL OFF)
+endif()
+option(NOTIFICATIONMANAGER_BUILD_EXAMPLES "Build the examples" ${NOTIFICATIONMANAGER_IS_TOP_LEVEL})
+
+# Only for the main project
+#--------------------------------------
+if (NOTIFICATIONMANAGER_IS_TOP_LEVEL)
+    # NotificationManager.h uses std::any from C++17 on, and its own any before, so the library and the code that
+    # uses it must be built with the same standard. As a subproject, the library takes the one of the main project.
+    set(CMAKE_CXX_STANDARD          11)
+    set(CMAKE_CXX_STANDARD_REQUIRED ON)
+    set(CMAKE_CXX_EXTENSIONS        OFF)
+
+    # Makefile and Ninja builds have no optimization without a build type.
+    if (NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
+        set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+    endif()
+
+    set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+endif()
+
+# Dependencies
+#--------------------------------------
+find_package(Threads REQUIRED)
+
+# Target options
+#--------------------------------------
+if (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+    include(CheckCXXSourceCompiles)
+    check_cxx_source_compiles([=[
+        #if !defined(_M_IX86) && !defined(_M_X64)
+            #error Edit and Continue is not supported on this architecture
+        #endif
+        int main() { return 0; }
+    ]=] NOTIFICATIONMANAGER_MSVC_X86_OR_X64)
+
+    # Edit and Continue in Debug. CMake 3.16 has no target property that can replace /Zi with /ZI.
+    if (NOTIFICATIONMANAGER_MSVC_X86_OR_X64)
+        string(REGEX REPLACE "[/-]Z[7iI]" "/ZI" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
+        if (NOT CMAKE_CXX_FLAGS_DEBUG MATCHES "[/-]ZI")
+            string(APPEND CMAKE_CXX_FLAGS_DEBUG " /ZI")
+        endif()
     endif()
 endif()
 
+function(notificationmanager_setup_target target)
+    if (MSVC)
+        target_compile_definitions(${target}
+        PRIVATE
+            _CRT_SECURE_NO_WARNINGS
+        )
+
+        target_compile_options(${target}
+        PRIVATE
+            /W3
+            /Zc:__cplusplus
+            /utf-8
+        )
+
+        if (MSVC_VERSION GREATER_EQUAL 1900)
+            target_compile_options(${target}
+            PRIVATE
+                /sdl
+            )
+        endif()
+    else()
+        target_compile_options(${target}
+        PRIVATE
+            -Wall -Wextra
+            -Wno-switch -Wno-unused-function -Wno-unused-parameter
+        )
+    endif()
+endfunction()
+
+# Library
 #--------------------------------------
-set(NOTIFICATIONS
-    notifications/Delegate.h
-    notifications/NotificationManager.cpp
-    notifications/NotificationManager.h
-    #notifications/NotificationId.h     Use per project NotificationId.h
+set(SRC_Notifications
+    ${CMAKE_CURRENT_SOURCE_DIR}/notifications/Delegate.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/notifications/NotificationManager.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/notifications/NotificationManager.h
+    # Each project has its own NotificationId.h. NotificationManager.cpp only needs its declaration.
 )
-source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" FILES ${NOTIFICATIONS})
 
+source_group(
+    TREE "${CMAKE_CURRENT_SOURCE_DIR}"
+    FILES ${SRC_Notifications}
+)
+
+add_library(NotificationManager STATIC
+    ${SRC_Notifications}
+)
+
+notificationmanager_setup_target(NotificationManager)
+
+target_compile_features(NotificationManager
+PUBLIC
+    cxx_std_11
+)
+
+target_include_directories(NotificationManager
+PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_link_libraries(NotificationManager
+PUBLIC
+    Threads::Threads
+)
+
+# Examples
 #--------------------------------------
-set(Example1
-    example1/main.cpp
-    example1/NotificationId.h
-)
-source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}/example1" FILES ${Example1})
+function(notificationmanager_add_example target source_dir)
+    set(sources
+        ${ARGN}
+    )
 
-add_executable(Example1
-    ${Example1}
-    ${NOTIFICATIONS}
-)
-target_include_directories(Example1 PRIVATE .)
+    source_group(
+        TREE "${CMAKE_CURRENT_SOURCE_DIR}/${source_dir}"
+        FILES ${sources}
+    )
 
-#--------------------------------------
-set(Example2
-    example2/main.cpp
-    example2/agent.h
-    example2/NotificationId.h
-)
-source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}/example2" FILES ${Example2})
+    add_executable(${target}
+        ${sources}
+    )
 
-add_executable(Example2
-    ${Example2}
-    ${NOTIFICATIONS}
-)
-target_include_directories(Example2 PRIVATE .)
+    notificationmanager_setup_target(${target})
 
-#--------------------------------------
-set(Example3
-    example3/main.cpp
-    example3/NotificationId.h
-)
-source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}/example3" FILES ${Example3})
+    target_link_libraries(${target}
+        NotificationManager
+    )
+endfunction()
 
-add_executable(Example3
-    ${Example3}
-    ${NOTIFICATIONS}
-)
-target_include_directories(Example3 PRIVATE .)
+if (NOTIFICATIONMANAGER_BUILD_EXAMPLES)
+    notificationmanager_add_example(Example1 example1
+        ${CMAKE_CURRENT_SOURCE_DIR}/example1/main.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/example1/NotificationId.h
+    )
+
+    notificationmanager_add_example(Example2 example2
+        ${CMAKE_CURRENT_SOURCE_DIR}/example2/main.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/example2/agent.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/example2/NotificationId.h
+    )
+
+    notificationmanager_add_example(Example3 example3
+        ${CMAKE_CURRENT_SOURCE_DIR}/example3/main.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/example3/NotificationId.h
+    )
+endif()

@@ -3,6 +3,7 @@
 #endif
 #include <cmath>
 #include <stdarg.h>
+#include <thread>
 #include "agent.h"
 #include "notifications/NotificationManager.h"
 #include "NotificationId.h"
@@ -10,14 +11,6 @@
 //-------------------------------------
 using MindShake::NotificationManager;
 using MindShake::NotificationId;
-
-#if __cplusplus >= 201703L || (defined(_MSVC_LANG) && _MSVC_LANG >= 201703L)
-    using namespace std::chrono_literals;
-#else
-    constexpr std::chrono::milliseconds operator"" ms(unsigned long long value) noexcept {
-        return std::chrono::milliseconds(value);
-    }
-#endif
 
 //-------------------------------------
 void
@@ -46,12 +39,17 @@ struct TextBuffer {
 
     void    clear() { index = 0; }
     int     printf(const char* msg, ...) {
-        int size;
+        size_t  available = sizeof(buffer) - index;
+        int     size;
         va_list arg;
         va_start(arg, msg);
-        size = vsnprintf(buffer + index, sizeof(buffer) - index - 1, msg, arg);
-        index += size;
+        size = vsnprintf(buffer + index, available, msg, arg);
         va_end(arg);
+
+        // vsnprintf returns the length of the whole text, even when it did not fit
+        if (size > 0) {
+            index += size_t(size) < available ? size_t(size) : available - 1;
+        }
 
         return size;
     }
@@ -141,7 +139,7 @@ main(int argc, char *argv[]) {
     goblinA.SetEnemy(&orc);
     goblinB.SetEnemy(&orc);
     goblinC.SetEnemy(&orc);
-    while(keepRunning) {
+    while (keepRunning) {
         if (drawConsole) {
             drawConsole = false;
             Clear();
@@ -153,14 +151,14 @@ main(int argc, char *argv[]) {
         goblinA.Run();
         goblinB.Run();
         goblinC.Run();
-        std::this_thread::sleep_for(50ms);
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 
     Clear();
     printf("%s", text.buffer);
     fflush(NULL);
 
-    if (orc.mHP > 0) {
+    if (orc.IsAlive()) {
         printf("Orc wins!\n");
     }
     else {
