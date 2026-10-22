@@ -84,7 +84,7 @@ struct Runner {
 int
 main(int argc, char *argv[]) {
     std::vector<Runner>  runners;
-    volatile size_t total = 0;
+    size_t total = 0;
 
     NotificationManager::GetDelegate(NotificationId::Dead)
         .Add([&](NotificationId id, const any &data) {

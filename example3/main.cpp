@@ -21,14 +21,6 @@ struct S {
     }
 };
 
-struct Button {
-    void OnClick() {
-        onPressed();
-    }
-
-    MindShake::Delegate<void()> onPressed;
-};
-
 //-------------------------------------
 int
 main(int argc, char *argv[]) {

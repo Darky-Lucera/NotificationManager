@@ -1,10 +1,10 @@
 # NotificationManager
 
-​NotificationManager is a thread-safe, easy-to-use utility for sending and receiving notifications. It allows you to decouple different modules of your application. It can also simplify multi-threaded communication in many cases.
+NotificationManager is a thread-safe, easy-to-use utility for sending and receiving notifications. It allows you to decouple different modules of your application. It can also simplify multi-threaded communication in many cases.
 
 This utility is based on a previous one we used in **Lucera Project**'s **MindShake** game engine. But the previous version was programmed in _C++98_ and instead of _any_ it used our own implementation of _variant_. But in essence, it is the same.
 
-By default, it uses _C++17_ std::any library feature but it has a _C++11_ fallback using the  implementation from @thelink2012 [GitHub](https://github.com/thelink2012/any).
+When it is built with _C++17_ or later, it uses the std::any library feature. With older standards it uses a _C++11_ fallback: the implementation from @thelink2012 [GitHub](https://github.com/thelink2012/any). The CMake project builds with _C++11_ by default.
 
 Due to that it is recommended to use plain ```any, any_cast, bad_any_cast``` instead of ```std::any, std::any_cast, std::bad_any_cast``` to maximize compatibility.
 
@@ -69,8 +69,7 @@ delegate.RemoveById(id);
 
 _**Note:** I have had to implement my own wrapper for callables (```Delegate<...>```) since I needed to identify the callable in case the user wants to remove it, because ```std::function``` lacks the ```operator ==```._
 
-
-**```SendNotification(NotificationId id, std::any data, bool overwrite = false)```:** Allows sending a notification from anywhere, with whatever data. It also allows the user to overwrite pending notifications. For instance, It's uncommon that someone needs all the UI windows to reshape notifications, just the last one is enough.
+**```SendNotification(NotificationId id, any data = any(), bool overwrite = false)```:** Allows sending a notification from anywhere, with whatever data. Without data, the callbacks receive an empty `any`. It also allows the user to overwrite pending notifications: with `overwrite`, the new notification replaces all the pending ones with the same id. For instance, it's uncommon that someone needs all the UI windows to reshape notifications, just the last one is enough.
 
 By default, the notifications are sent to the current thread if there is an associated delegate for the specified NotificationId.
 
@@ -82,9 +81,9 @@ NotificationManager::SendNotification(NotificationId::EnemyKilled, enemy);
 NotificationManager::SendNotification(NotificationId::Reshape, std::tuple(width, height));
 ```
 
-_**Note:** If a callback sends the same NotificationId that it is handling, in the same thread, the current thread does not receive that new notification. Other threads still receive it, because a `Delegate` ignores calls made while it is running (see the [Delegate](https://github.com/Darky-Lucera/delegate) README)._
+_**Note:** A `Delegate` ignores calls made while it is running (see the [Delegate](https://github.com/Darky-Lucera/delegate) README). So a notification for a delegate that is running in the same thread is not delivered at once. For instance, when a callback sends the NotificationId it is handling (or one that led to it), or calls `SendStoredNotificationsForThisThread`. The notification stays stored, and the thread receives it in a later call to `SendStoredNotificationsForThisThread`. Other threads receive it as usual._
 
-**```SendStoredNotificationsForThisThread()```:** As it is not possible to interrupt a thread while executing, every thread must call this function at the point the user desire to receive the pending notifications. Also, it's interesting that you call this in the main thread to get notifications sent from different threads.
+**```SendStoredNotificationsForThisThread()```:** As it is not possible to interrupt a thread while executing, every thread must call this function at the point the user desires to receive the pending notifications. Also, it's interesting that you call this in the main thread to get notifications sent from different threads.
 
 ```cpp
 while (keepRunning) {
@@ -96,9 +95,9 @@ while (keepRunning) {
 
 **When a thread ends**, the NotificationManager removes its delegates and the notifications waiting for it. So a finished thread does not keep collecting notifications, and a new thread does not inherit them.
 
-While a thread is running, it keeps receiving the notifications of every id it called `GetDelegate` for, even if it removed all its functions. They are dropped when the thread calls `SendStoredNotificationsForThisThread`. A thread that stops listening but keeps running should call `ClearThisThread`.
+While a thread is running, it keeps receiving the notifications of every id it called `GetDelegate` for (since its last call to `ClearThisThread`), even if it removed all its functions. They are dropped when the thread calls `SendStoredNotificationsForThisThread`. A thread that stops listening but keeps running should call `ClearThisThread`.
 
-**```ClearThisThread()```:** Removes all the functions and the pending notifications of the calling thread. It is safe to call it from a callback, and the references returned by `GetDelegate` stay valid, so the thread can add new functions later.
+**```ClearThisThread()```:** Removes all the functions and the pending notifications of the calling thread, and the thread receives nothing more until it subscribes again with `GetDelegate`. It is safe to call it from a callback: the pending notifications that `SendStoredNotificationsForThisThread` has not delivered yet are dropped too. The references returned by `GetDelegate` stay valid, but a function added through a reference kept from before `ClearThisThread` receives nothing until the thread calls `GetDelegate` again for that id.
 
 ```cpp
 NotificationManager::ClearThisThread();
@@ -117,7 +116,7 @@ void         DisableMT();
 bool         GetMT();
 ```
 
-**Enable/Disble AutoSend:** Sometimes the user don't want to send automatically notifications for the current thread, and wait until the next call to ```SendStoredNotificationsForThisThread```. You can modify the default behavior (send them automatically) using these functions:
+**Enable/Disable AutoSend:** Sometimes the user doesn't want to send notifications to the current thread automatically, and prefers to wait until the next call to ```SendStoredNotificationsForThisThread```. You can modify the default behavior (send them automatically) using these functions:
 
 ```cpp
 void         SetAutoSend(bool set);
@@ -154,7 +153,7 @@ btn.OnClick();
 
 ## How to use it
 
-Just drop the files **NotificationManager.h**, **NotificationManager.cpp** and _**NotificationId.h**_ to your project (**notifications** is a good name for the folder containing them).
+Just drop the files **NotificationManager.h**, **NotificationManager.cpp**, **Delegate.h** and _**NotificationId.h**_, and the **any** folder, to your project (**notifications** is a good name for the folder containing them). The **any** folder is only needed before _C++17_.
 
 The **notifications** folder here contains an empty **NotificationId.h** file that you have to fill with your own notification ids.
 
@@ -175,6 +174,6 @@ NotificationManager::Clear();
     Because it will be only one instance and, in this case, I prefer not to use a Singleton, to avoid having to continually call ```GetInstance```.
     I also don't want to use ~~(an over-designed, ahem)~~ a more complicated pattern to accomplish this simple task.
 
-* Why is not a header only utility?
+* Why is it not a header-only utility?
 
     Because I want it to be compatible with C++11, and static inline variables are a _C++17_ feature. Sorry.

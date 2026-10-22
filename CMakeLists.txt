@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(NotificationCenter VERSION 1.2.0 LANGUAGES CXX)
+project(NotificationCenter VERSION 1.3.0 LANGUAGES CXX)
 
 # Options
 #--------------------------------------

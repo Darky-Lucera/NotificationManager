@@ -39,6 +39,10 @@ namespace MindShake {
         using Base = MindShake::Delegate<void(NotificationId, const any &)>;
         using Base::operator();
 
+        // False after ClearThisThread, until the thread calls GetDelegate again. Other threads read it,
+        // so it is only used under the lock of the NotificationManager.
+        bool    mSubscribed = true;
+
         friend class NotificationManager;
     };
 
@@ -49,18 +53,19 @@ namespace MindShake {
             using TID      = std::thread::id;
 
         public:
-            static constexpr unsigned int   major = 1;
-            static constexpr unsigned int   minor = 2;
-            static constexpr unsigned int   patch = 0;
+            static constexpr uint32_t   major = 1;
+            static constexpr uint32_t   minor = 3;
+            static constexpr uint32_t   patch = 0;
 
         public:
             static Delegate &   GetDelegate(NotificationId id);
-            static void         SendNotification(NotificationId id, any data = int(0), bool overwrite = false);
+            static void         SendNotification(NotificationId id, any data = any(), bool overwrite = false);
 
             static void         SendStoredNotificationsForThisThread();
 
-            // Removes the functions and the pending notifications of the calling thread. It is safe to call it
-            // from a callback, and the references returned by GetDelegate stay valid.
+            // Removes the functions and the pending notifications of the calling thread, and the thread receives
+            // nothing more until it calls GetDelegate again. It is safe to call it from a callback, and the
+            // references returned by GetDelegate stay valid.
             static void         ClearThisThread();
 
         // Configuration
