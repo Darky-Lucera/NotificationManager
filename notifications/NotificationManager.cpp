@@ -59,10 +59,18 @@ NotificationManager::GetDelegate(NotificationId id) {
 
     const auto lock = Lock();
 
-    Delegate &delegate   = mDelegatesByThread[std::this_thread::get_id()][id];
-    delegate.mSubscribed = true;
+    return mDelegatesByThread[std::this_thread::get_id()][id];
+}
 
-    return delegate;
+//-------------------------------------
+size_t
+NotificationDelegate::Subscribe(size_t id) {
+    if (id != size_t(-1) && !mSubscribed) {
+        const auto lock = NotificationManager::Lock();
+        mSubscribed = true;
+    }
+
+    return id;
 }
 
 //-------------------------------------
@@ -254,7 +262,7 @@ NotificationManager::ClearThisThread() {
         delegate->Clear();
     }
 
-    // After the Clear() calls, so a destructor that called GetDelegate does not leave the thread subscribed,
+    // After the Clear() calls, so a destructor that added a function does not leave the thread subscribed,
     // and the notifications stored meanwhile are dropped too
     PendingList pending;
     {

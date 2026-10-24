@@ -36,15 +36,38 @@ namespace MindShake {
     //-------------------------------------
     // The delegate that GetDelegate returns. Users can Add and Remove functions, but only the
     // NotificationManager can call it, so every notification goes through SendNotification.
-    class NotificationDelegate : public MindShake::Delegate<void(NotificationId, const any &)> {
+    class NotificationDelegate : private MindShake::Delegate<void(NotificationId, const any &)> {
         using Base = MindShake::Delegate<void(NotificationId, const any &)>;
-        using Base::operator();
 
-        // False after ClearThisThread, until the thread calls GetDelegate again. Other threads read it,
-        // so it is only used under the lock of the NotificationManager.
-        bool    mSubscribed = true;
+        public:
+                                NotificationDelegate()                                  = default;
+                                NotificationDelegate(NotificationDelegate &&)           = delete;
+            NotificationDelegate &operator=(NotificationDelegate &&)                    = delete;
 
-        friend class NotificationManager;
+            // Adding a function subscribes the thread to this id. Only Add does it, so code that only removes,
+            // like a destructor, does not subscribe the thread again after ClearThisThread or when it ends.
+            template <typename... Params>
+            size_t              Add(Params &&...params)                                 { return Subscribe(Base::Add(std::forward<Params>(params)...)); }
+            // A template cannot take an overloaded function by name, but this overload can
+            size_t              Add(TFunc func)                                         { return Subscribe(Base::Add(func));                            }
+
+            using Base::Remove;
+            using Base::RemoveById;
+            using Base::Clear;
+            using Base::GetNumDelegates;
+            using Base::IsRunning;
+
+        private:
+            using Base::operator();
+
+            size_t              Subscribe(size_t id);
+
+        private:
+            // False until a function is added, and again after ClearThisThread. Other threads read it under the
+            // lock of the NotificationManager. Only this thread writes it, so this thread can read it without the lock.
+            bool                mSubscribed = false;
+
+            friend class NotificationManager;
     };
 
     //-------------------------------------
@@ -65,7 +88,7 @@ namespace MindShake {
             static void         SendStoredNotificationsForThisThread();
 
             // Removes the functions and the pending notifications of the calling thread, and the thread receives
-            // nothing more until it calls GetDelegate again. It is safe to call it from a callback, and the
+            // nothing more until it adds a function again. It is safe to call it from a callback, and the
             // references returned by GetDelegate stay valid.
             static void         ClearThisThread();
 
@@ -114,6 +137,8 @@ namespace MindShake {
 
         private:
             struct ThreadCleaner;
+
+            friend class NotificationDelegate;
 
                                 NotificationManager()                            = delete;
             virtual             ~NotificationManager()                           = delete;
