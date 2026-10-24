@@ -34,22 +34,20 @@ namespace MindShake {
     enum class NotificationId;
 
     //-------------------------------------
-    // The delegate that GetDelegate returns. Users can Add and Remove functions, but only the
-    // NotificationManager can call it, so every notification goes through SendNotification.
+    // Users can add and remove functions, but only the NotificationManager can call them
     class NotificationDelegate : private MindShake::Delegate<void(NotificationId, const any &)> {
         using Base = MindShake::Delegate<void(NotificationId, const any &)>;
 
         public:
-                                NotificationDelegate()                                  = default;
-                                NotificationDelegate(NotificationDelegate &&)           = delete;
-            NotificationDelegate &operator=(NotificationDelegate &&)                    = delete;
+                                NotificationDelegate()                          = default;
+                                NotificationDelegate(NotificationDelegate &&)   = delete;
+            NotificationDelegate &operator=(NotificationDelegate &&)            = delete;
 
-            // Adding a function subscribes the thread to this id. Only Add does it, so code that only removes,
-            // like a destructor, does not subscribe the thread again after ClearThisThread or when it ends.
+            // Adding a function subscribes the thread; GetDelegate and Remove do not
             template <typename... Params>
-            size_t              Add(Params &&...params)                                 { return Subscribe(Base::Add(std::forward<Params>(params)...)); }
+            size_t              Add(Params &&...params)                         { return Subscribe(Base::Add(std::forward<Params>(params)...)); }
             // A template cannot take an overloaded function by name, but this overload can
-            size_t              Add(TFunc func)                                         { return Subscribe(Base::Add(func));                            }
+            size_t              Add(TFunc func)                                 { return Subscribe(Base::Add(func));                            }
 
             using Base::Remove;
             using Base::RemoveById;
@@ -63,8 +61,7 @@ namespace MindShake {
             size_t              Subscribe(size_t id);
 
         private:
-            // False until a function is added, and again after ClearThisThread. Other threads read it under the
-            // lock of the NotificationManager. Only this thread writes it, so this thread can read it without the lock.
+            // Only its own thread writes it; other threads read it under the lock
             bool                mSubscribed = false;
 
             friend class NotificationManager;
@@ -78,7 +75,7 @@ namespace MindShake {
 
         public:
             static constexpr uint32_t   major = 1;
-            static constexpr uint32_t   minor = 3;
+            static constexpr uint32_t   minor = 4;
             static constexpr uint32_t   patch = 0;
 
         public:
@@ -87,9 +84,10 @@ namespace MindShake {
 
             static void         SendStoredNotificationsForThisThread();
 
-            // Removes the functions and the pending notifications of the calling thread, and the thread receives
-            // nothing more until it adds a function again. It is safe to call it from a callback, and the
-            // references returned by GetDelegate stay valid.
+            // Removes the functions and the pending notifications of the calling thread,
+            // and the thread receives nothing more until it adds a function again.
+            // It is safe to call it from a callback,
+            // and the references returned by GetDelegate stay valid.
             static void         ClearThisThread();
 
         // Configuration
@@ -122,7 +120,7 @@ namespace MindShake {
 
         protected:
             static std::unique_lock<std::mutex> Lock() {
-                std::unique_lock<std::mutex> lock(mMutex, std::defer_lock);
+                std::unique_lock<std::mutex> lock(GetState().mutex, std::defer_lock);
                 if (mEnableMT) {
                     lock.lock();
                 }
@@ -130,7 +128,8 @@ namespace MindShake {
             }
 
         protected:
-            // Returns the delegate of this thread when it has to be called directly, instead of storing the notification for it.
+            // Returns the delegate of this thread when it has to be called directly,
+            // instead of storing the notification for it
             static Delegate *   DistributeNotification(NotificationId id, const std::shared_ptr<const any> &data, bool overwrite, bool callHere);
 
             static void         RemoveThread(TID tid);
@@ -150,18 +149,45 @@ namespace MindShake {
         protected:
             using DelegateMap       = std::unordered_map<NotificationId, Delegate>;
             using DelegatesByThread = std::unordered_map<TID, DelegateMap>;
-            // All the receivers share one read-only payload. Copying, moving or destroying a payload runs user code,
-            // and the queues are changed under the lock, so they only handle pointers.
+            // All the receivers share one read-only payload,
+            // so the queues only move pointers and no user code runs under the lock
             using Payload           = std::shared_ptr<const any>;
             using PendingList       = std::vector<std::pair<NotificationId, Payload>>;
             using PendingByThread   = std::unordered_map<TID, PendingList>;
 
+            struct State {
+                // First, so it is destroyed after the maps it protects
+                std::mutex          mutex;
+                DelegatesByThread   delegatesByThread;
+                PendingByThread     pendingByThread;
+            };
+
+            static State &      GetState()  { return *mState; }
+
         protected:
-            static DelegatesByThread    mDelegatesByThread;
-            static PendingByThread      mPendingByThread;
-            static std::mutex           mMutex;
             static bool                 mEnableMT;
             static std::atomic<bool>    mAutoSend;
-        };
+
+        private:
+            struct alignas(State) StateStorage {
+                unsigned char   bytes[sizeof(State)];
+            };
+
+            static size_t               mInitCount;
+            static State                *mState;
+            static StateStorage         mStateStorage;
+
+            friend struct NotificationManagerInit;
+    };
+
+    //-------------------------------------
+    // Each file that includes this header gets one of these objects,
+    // defined before the globals of that file.
+    // So the state of the NotificationManager is created before those globals and
+    // destroyed after them
+    static struct NotificationManagerInit {
+        NotificationManagerInit();
+        ~NotificationManagerInit();
+    } sNotificationManagerInit;
 
 } // end of namespace

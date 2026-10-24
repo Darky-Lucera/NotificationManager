@@ -1,4 +1,5 @@
 #include "NotificationManager.h"
+#include <new>
 
 //-----------------------------------------------------------------------------
 // Copyright (C) 2021 Carlos Aragonés
@@ -13,40 +14,51 @@ constexpr uint32_t                      NotificationManager::major;
 constexpr uint32_t                      NotificationManager::minor;
 constexpr uint32_t                      NotificationManager::patch;
 
-NotificationManager::DelegatesByThread  NotificationManager::mDelegatesByThread;
-NotificationManager::PendingByThread    NotificationManager::mPendingByThread;
-std::mutex                              NotificationManager::mMutex;
 bool                                    NotificationManager::mEnableMT = true;
 std::atomic<bool>                       NotificationManager::mAutoSend(true);
 
-// MinGW destroys the thread_local objects of the main thread after the static ones, so the
-// ThreadCleaner of the main thread can run when the members above are already gone.
-// This guard is defined after them, so it is destroyed first and marks that moment.
-static bool gStaticsDestroyed = false;
+size_t                                  NotificationManager::mInitCount = 0;
+NotificationManager::State *            NotificationManager::mState     = nullptr;
+NotificationManager::StateStorage       NotificationManager::mStateStorage;
 
-static struct StaticsGuard {
-    ~StaticsGuard() { gStaticsDestroyed = true; }
-} gStaticsGuard;
+//-------------------------------------
+NotificationManagerInit::NotificationManagerInit() {
+    if (NotificationManager::mInitCount++ == 0) {
+        NotificationManager::mState = new (NotificationManager::mStateStorage.bytes) NotificationManager::State();
+    }
+}
 
-// Lets SendStoredNotificationsForThisThread know that a callback called ClearThisThread, so the
-// notifications it already took out must not be delivered either
+//-------------------------------------
+NotificationManagerInit::~NotificationManagerInit() {
+    if (--NotificationManager::mInitCount == 0) {
+        NotificationManager::Clear();
+        NotificationManager::mState->~State();
+        NotificationManager::mState = nullptr;
+    }
+}
+
+// Counts the ClearThisThread calls of this thread.
+// SendStoredNotificationsForThisThread checks it to stop when a callback clears the thread
 static thread_local size_t gNumClears = 0;
 
-// Calls from the NotificationManager to delegates of this thread that are running. While it is zero, no
-// delegate of this thread is running, so SendStoredNotificationsForThisThread can take every notification.
+// Nonzero while the NotificationManager is calling a delegate of this thread
 static thread_local size_t gCallDepth = 0;
 
+//-------------------------------------
 struct CallDepthGuard {
     CallDepthGuard()  { ++gCallDepth; }
     ~CallDepthGuard() { --gCallDepth; }
 };
 
 //-------------------------------------
-// Removes what a thread left in the NotificationManager when the thread ends. Otherwise a finished thread
-// would keep receiving notifications forever, and a new thread that gets the same id would inherit them.
+// Removes the data of a thread when it ends.
+// Without it, a finished thread would keep receiving notifications,
+// and a new thread with the same id would inherit them
 struct NotificationManager::ThreadCleaner {
     ~ThreadCleaner() {
-        if (!gStaticsDestroyed) {
+        // MinGW destroys the thread_local objects of the main thread after the static ones,
+        // so the state may already be gone here
+        if (mState != nullptr) {
             RemoveThread(std::this_thread::get_id());
         }
     }
@@ -57,9 +69,11 @@ NotificationManager::Delegate &
 NotificationManager::GetDelegate(NotificationId id) {
     static thread_local ThreadCleaner cleaner;
 
+    State &state = GetState();
+
     const auto lock = Lock();
 
-    return mDelegatesByThread[std::this_thread::get_id()][id];
+    return state.delegatesByThread[std::this_thread::get_id()][id];
 }
 
 //-------------------------------------
@@ -79,8 +93,8 @@ NotificationManager::SendNotification(NotificationId id, any data, bool overwrit
     const Payload payload  = std::make_shared<const any>(std::move(data));
     Delegate      *delegate = DistributeNotification(id, payload, overwrite, mAutoSend.load(std::memory_order_relaxed));
 
-    // Called after DistributeNotification because a callback may send a new notification,
-    // and the other threads must receive it after this one (or only the new one, with overwrite).
+    // Call delegate after DistributeNotification,
+    // so the other threads get a notification sent from a callback after this one
     if (delegate != nullptr) {
         const CallDepthGuard depth;
         (*delegate)(id, *payload);
@@ -90,17 +104,18 @@ NotificationManager::SendNotification(NotificationId id, any data, bool overwrit
 //-------------------------------------
 NotificationManager::Delegate *
 NotificationManager::DistributeNotification(NotificationId id, const Payload &data, bool overwrite, bool callHere) {
+    State     &state    = GetState();
     const TID self     = std::this_thread::get_id();
     Delegate  *delegate = nullptr;
 
-    // Destroying a payload may run code that uses the NotificationManager,
-    // so the overwritten ones are destroyed after releasing the lock
+    // The overwritten notifications are destroyed after releasing the lock,
+    // because a payload destructor may use the NotificationManager
     PendingList overwritten;
     {
         const auto  lock = Lock();
 
-        //for (auto &[tid, threadDelegates] : mDelegatesByThread) {
-        for (auto &pair : mDelegatesByThread) {
+        //for (auto &[tid, threadDelegates] : state.delegatesByThread) {
+        for (auto &pair : state.delegatesByThread) {
             const auto &tid             = pair.first;
             auto       &threadDelegates = pair.second;
 
@@ -110,9 +125,8 @@ NotificationManager::DistributeNotification(NotificationId id, const Payload &da
                 continue;
             }
 
-            auto &pending = mPendingByThread[tid];
+            auto &pending = state.pendingByThread[tid];
             if (overwrite) {
-                // Removes every older notification with this id, so the new one is the last one received
                 size_t count = 0;
                 for (size_t i = 0; i < pending.size(); ++i) {
                     if (pending[i].first == id) {
@@ -130,8 +144,9 @@ NotificationManager::DistributeNotification(NotificationId id, const Payload &da
                 pending.erase(pending.begin() + ptrdiff_t(count), pending.end());
             }
 
-            // A running delegate would ignore the call, so then the notification is stored for this thread
-            // instead of lost. Only this thread runs its delegates, so it cannot start running before the call.
+            // A running delegate would ignore the call, so the notification is stored instead.
+            // Only this thread runs its delegates,
+            // so this one cannot start running before SendNotification calls it
             if (callHere && tid == self && !it->second.IsRunning()) {
                 delegate = &it->second;
                 continue;
@@ -147,15 +162,16 @@ NotificationManager::DistributeNotification(NotificationId id, const Payload &da
 //-------------------------------------
 void
 NotificationManager::SendStoredNotificationsForThisThread() {
+    State       &state = GetState();
     PendingList batch;
     DelegateMap *threadDelegates;
     {
         const auto  lock = Lock();
         const TID   tid  = std::this_thread::get_id();
 
-        auto pendingIt   = mPendingByThread.find(tid);
-        auto delegatesIt = mDelegatesByThread.find(tid);
-        if (pendingIt == mPendingByThread.end() || delegatesIt == mDelegatesByThread.end()) {
+        auto pendingIt   = state.pendingByThread.find(tid);
+        auto delegatesIt = state.delegatesByThread.find(tid);
+        if (pendingIt == state.pendingByThread.end() || delegatesIt == state.delegatesByThread.end()) {
             return;
         }
 
@@ -166,8 +182,8 @@ NotificationManager::SendStoredNotificationsForThisThread() {
             batch.swap(pending);
         }
         else {
-            // Called from a callback. A running delegate would ignore its notifications, so they stay
-            // pending, in order, for a later call.
+            // From a callback: a running delegate would ignore its notifications,
+            // so they stay pending, in order
             size_t count = 0;
             for (size_t i = 0; i < pending.size(); ++i) {
                 auto it = threadDelegates->find(pending[i].first);
@@ -208,9 +224,11 @@ NotificationManager::SendStoredNotificationsForThisThread() {
 //-------------------------------------
 void
 NotificationManager::RemoveThread(TID tid) {
-    // Destroying a lambda destroys what it captured, and that code may use the NotificationManager again.
-    // So everything is destroyed after releasing the lock, and it repeats because that code may even call
-    // GetDelegate and register this thread again.
+    State &state = GetState();
+
+    // Destroying a lambda may run code that uses the NotificationManager,
+    // even GetDelegate for this thread.
+    // So everything is destroyed outside the lock, and it repeats until nothing is left
     bool found;
     do {
         DelegateMap threadDelegates;
@@ -219,17 +237,17 @@ NotificationManager::RemoveThread(TID tid) {
             const auto lock = Lock();
             found = false;
 
-            auto delegatesIt = mDelegatesByThread.find(tid);
-            if (delegatesIt != mDelegatesByThread.end()) {
+            auto delegatesIt = state.delegatesByThread.find(tid);
+            if (delegatesIt != state.delegatesByThread.end()) {
                 threadDelegates.swap(delegatesIt->second);
-                mDelegatesByThread.erase(delegatesIt);
+                state.delegatesByThread.erase(delegatesIt);
                 found = true;
             }
 
-            auto pendingIt = mPendingByThread.find(tid);
-            if (pendingIt != mPendingByThread.end()) {
+            auto pendingIt = state.pendingByThread.find(tid);
+            if (pendingIt != state.pendingByThread.end()) {
                 pending.swap(pendingIt->second);
-                mPendingByThread.erase(pendingIt);
+                state.pendingByThread.erase(pendingIt);
                 found = true;
             }
         }
@@ -239,15 +257,15 @@ NotificationManager::RemoveThread(TID tid) {
 //-------------------------------------
 void
 NotificationManager::ClearThisThread() {
+    State                   &state = GetState();
     const TID               tid = std::this_thread::get_id();
     std::vector<Delegate *> delegates;
     {
         const auto lock = Lock();
 
-        // Pointers, not iterators: destroying a lambda may call GetDelegate and grow the map,
-        // which invalidates iterators but not the delegates themselves
-        auto delegatesIt = mDelegatesByThread.find(tid);
-        if (delegatesIt != mDelegatesByThread.end()) {
+        // Pointers, not iterators: a destructor may call GetDelegate and grow the map
+        auto delegatesIt = state.delegatesByThread.find(tid);
+        if (delegatesIt != state.delegatesByThread.end()) {
             for (auto &pair : delegatesIt->second) {
                 delegates.emplace_back(&pair.second);
             }
@@ -256,27 +274,28 @@ NotificationManager::ClearThisThread() {
 
     ++gNumClears;
 
-    // After releasing the lock, for the same reason as in RemoveThread. Only this thread uses its
-    // delegates, so they need no lock, and Delegate::Clear() is safe even from one of their callbacks.
+    // The delegates are cleared outside the lock, as in RemoveThread.
+    // Delegate::Clear() is safe even from one of their callbacks
     for (auto *delegate : delegates) {
         delegate->Clear();
     }
 
-    // After the Clear() calls, so a destructor that added a function does not leave the thread subscribed,
+    // After the Clear() calls,
+    // so a destructor that added a function does not leave the thread subscribed,
     // and the notifications stored meanwhile are dropped too
     PendingList pending;
     {
         const auto lock = Lock();
 
-        auto delegatesIt = mDelegatesByThread.find(tid);
-        if (delegatesIt != mDelegatesByThread.end()) {
+        auto delegatesIt = state.delegatesByThread.find(tid);
+        if (delegatesIt != state.delegatesByThread.end()) {
             for (auto &pair : delegatesIt->second) {
                 pair.second.mSubscribed = false;
             }
         }
 
-        auto pendingIt = mPendingByThread.find(tid);
-        if (pendingIt != mPendingByThread.end()) {
+        auto pendingIt = state.pendingByThread.find(tid);
+        if (pendingIt != state.pendingByThread.end()) {
             pending.swap(pendingIt->second);
         }
     }
@@ -285,14 +304,15 @@ NotificationManager::ClearThisThread() {
 //-------------------------------------
 void
 NotificationManager::Clear() {
+    State             &state = GetState();
     DelegatesByThread delegatesByThread;
     PendingByThread   pendingByThread;
     {
         const auto lock = Lock();
 
-        delegatesByThread.swap(mDelegatesByThread);
-        pendingByThread.swap(mPendingByThread);
+        delegatesByThread.swap(state.delegatesByThread);
+        pendingByThread.swap(state.pendingByThread);
     }
 
-    // delegatesByThread and pendingByThread are destroyed here, after releasing the lock, for the same reason as in RemoveThread
+    // The old maps are destroyed here, after releasing the lock, as in RemoveThread
 }
