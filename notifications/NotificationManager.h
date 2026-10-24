@@ -8,6 +8,7 @@
 //-----------------------------------------------------------------------------
 
 #include <vector>
+#include <memory>
 #include <unordered_map>
 #include <thread>
 #include <mutex>
@@ -106,7 +107,8 @@ namespace MindShake {
             }
 
         protected:
-            static void         StoreTIDData(NotificationId id, const any &data, bool overwrite, bool skipThisThread);
+            // Returns the delegate of this thread when it has to be called directly, instead of storing the notification for it.
+            static Delegate *   DistributeNotification(NotificationId id, const std::shared_ptr<const any> &data, bool overwrite, bool callHere);
 
             static void         RemoveThread(TID tid);
 
@@ -121,17 +123,20 @@ namespace MindShake {
             NotificationManager &operator=(NotificationManager &&)               = delete;
 
         protected:
-            using Map      = std::unordered_map<NotificationId, Delegate>;
-            using TIDMap   = std::unordered_map<TID, Map>;
-            using NotData  = std::vector<std::pair<NotificationId, any>>;
-            using TIDData  = std::unordered_map<TID, NotData>;
+            using DelegateMap       = std::unordered_map<NotificationId, Delegate>;
+            using DelegatesByThread = std::unordered_map<TID, DelegateMap>;
+            // All the receivers share one read-only payload. Copying, moving or destroying a payload runs user code,
+            // and the queues are changed under the lock, so they only handle pointers.
+            using Payload           = std::shared_ptr<const any>;
+            using PendingList       = std::vector<std::pair<NotificationId, Payload>>;
+            using PendingByThread   = std::unordered_map<TID, PendingList>;
 
         protected:
-            static TIDMap               mTIDNotifications;
-            static TIDData              mTIDData;
+            static DelegatesByThread    mDelegatesByThread;
+            static PendingByThread      mPendingByThread;
             static std::mutex           mMutex;
             static bool                 mEnableMT;
             static std::atomic<bool>    mAutoSend;
-    };
+        };
 
 } // end of namespace

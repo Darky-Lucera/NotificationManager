@@ -29,7 +29,7 @@ namespace MindShake {
 
     // Version
     //---------------------------------
-    static constexpr uint32_t kDelegateVersion = 20261022;
+    static constexpr uint32_t kDelegateVersion = 20261023;
 
     // Macros
     //---------------------------------
@@ -186,8 +186,7 @@ namespace MindShake {
         // Some helpers
         protected:
             template <class Class>
-            static Class *
-                                UnConst(const Class *object)                          { return const_cast<Class *>(object);                          }
+            static Class *      UnConst(const Class *object)                          { return const_cast<Class *>(object);                          }
 
             // The wrapper ignores what operator() returns, so a functor can return any type
             template <typename Class>
@@ -212,7 +211,7 @@ namespace MindShake {
         public:
                                 Delegate() = default;
                                 Delegate(Delegate &&other) noexcept                   { *this = std::move(other);                                    }
-            virtual             ~Delegate()                                           { Clear();                                                     }
+            virtual             ~Delegate()                                           { mIsDestroying = true; Clear();                               }
 
             Delegate &          operator=(Delegate &&other) noexcept;
 
@@ -252,9 +251,9 @@ namespace MindShake {
 
             // Hack to detect lambdas with captures
             template <typename Lambda, typename std::enable_if<!std::is_assignable<Lambda, Lambda>::value && !std::is_convertible<Lambda, TFunc>::value, bool>::type = true>
-            size_t              Add(const Lambda &lambda)                             { return AddWrapper(new WrapperLambda<Lambda>(lambda));        }
+            size_t              Add(const Lambda &lambda)                             { return AddWrapper<WrapperLambda<Lambda>>(lambda);            }
 
-            size_t              Add(const std::function<void(Args...)> &func)         { return func ? AddWrapper(new WrapperStdFunction(func)) : size_t(-1); }
+            size_t              Add(const std::function<void(Args...)> &func)         { return func ? AddWrapper<WrapperStdFunction>(func) : size_t(-1); }
 
             //-------------------------
             // Remove
@@ -337,7 +336,8 @@ namespace MindShake {
             kEnableIfBaseDiffT  Find(kMethod(method) const &, const Object *object) const { return Find(object, method);                                 }
 
         protected:
-            size_t          AddWrapper(Wrapper *wrapper);
+            template <typename WrapperType, typename... ConstructorArgs>
+            size_t          AddWrapper(ConstructorArgs&&... args);
 
             // The object is always stored as non-const, so Add and Remove match whatever the
             // constness of the pointer they receive.
@@ -358,6 +358,7 @@ namespace MindShake {
             size_t                      mNumToRemove {};
             size_t                      mNextId {};
             mutable std::atomic_bool    mIsRunning {};
+            bool                        mIsDestroying {};
     };
 
     //---------------------------------
@@ -366,7 +367,7 @@ namespace MindShake {
     template <typename ...Args>
     inline Delegate<void(Args...)> &
     Delegate<void(Args...)>::operator=(Delegate &&other) noexcept {
-        if (this != &other) {
+        if (this != &other && !mIsDestroying) {
             Clear();
             mWrappers.swap(other.mWrappers);
             std::swap(mNumToRemove, other.mNumToRemove);
@@ -383,7 +384,7 @@ namespace MindShake {
     inline size_t
     Delegate<void(Args...)>::Add(TFunc func) {
         if (func != nullptr) {
-            return AddWrapper(new WrapperCFunc(func));
+            return AddWrapper<WrapperCFunc>(func);
         }
 
         return size_t(-1);
@@ -391,10 +392,17 @@ namespace MindShake {
 
     //---------------------------------
     template <typename ...Args>
+    template <typename WrapperType, typename... ConstructorArgs>
     inline size_t
-    Delegate<void(Args...)>::AddWrapper(Wrapper *wrapper) {
+    Delegate<void(Args...)>::AddWrapper(ConstructorArgs&&... args) {
+        if (mIsDestroying) {
+            return size_t(-1);
+        }
+
         // emplace_back can throw when the vector grows, and then nobody else would delete the wrapper
-        std::unique_ptr<Wrapper> owner(wrapper);
+        std::unique_ptr<Wrapper> owner(new WrapperType(std::forward<ConstructorArgs>(args)...));
+        Wrapper *wrapper = owner.get();
+
         // Each delegate has its own counter, so the ids stay unique even if several modules (DLLs) add to it
         wrapper->id = mNextId++;
         mWrappers.emplace_back(wrapper);
@@ -412,7 +420,7 @@ namespace MindShake {
             return size_t(-1);
         }
 
-        return AddWrapper(new WrapperMethod<Class, MethodPtr>(object, method));
+        return AddWrapper<WrapperMethod<Class, MethodPtr>>(object, method);
     }
 
     //---------------------------------
@@ -436,8 +444,9 @@ namespace MindShake {
     Delegate<void(Args...)>::RemoveIndex(ptrdiff_t idx) {
         if (idx >= 0 && mWrappers[idx]->isEnabled) {
             if (mIsRunning == false) {
-                delete mWrappers[idx];
+                Wrapper *wrapper = mWrappers[idx];
                 mWrappers.erase(mWrappers.begin() + idx);
+                delete wrapper;
             }
             else {
                 mWrappers[idx]->ToBeRemoved();
@@ -589,6 +598,7 @@ namespace MindShake {
 
         // Deleting a lambda destroys what it captured, and that code may use this delegate again.
         // Taking the wrappers out first means it never sees one that is already freed.
+        // Callbacks added by those destructors stay registered, unless this delegate is being destroyed.
         std::vector<Wrapper *> wrappers;
         wrappers.swap(mWrappers);
         mNumToRemove = 0;
