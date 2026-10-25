@@ -44,6 +44,9 @@ static thread_local size_t gNumClears = 0;
 // Nonzero while the NotificationManager is calling a delegate of this thread
 static thread_local size_t gCallDepth = 0;
 
+// Set by the ThreadCleaner. It has no destructor, so later thread_local destructors can still read it
+static thread_local bool gThreadEnded = false;
+
 //-------------------------------------
 struct CallDepthGuard {
     CallDepthGuard()  { ++gCallDepth; }
@@ -56,6 +59,8 @@ struct CallDepthGuard {
 // and a new thread with the same id would inherit them
 struct NotificationManager::ThreadCleaner {
     ~ThreadCleaner() {
+        gThreadEnded = true;
+
         // MinGW destroys the thread_local objects of the main thread after the static ones,
         // so the state may already be gone here
         if (mState != nullptr) {
@@ -67,7 +72,10 @@ struct NotificationManager::ThreadCleaner {
 //-------------------------------------
 NotificationManager::Delegate &
 NotificationManager::GetDelegate(NotificationId id) {
-    static thread_local ThreadCleaner cleaner;
+    // Passing again through a destroyed thread_local is undefined behavior
+    if (!gThreadEnded) {
+        static thread_local ThreadCleaner cleaner;
+    }
 
     State &state = GetState();
 
@@ -79,6 +87,12 @@ NotificationManager::GetDelegate(NotificationId id) {
 //-------------------------------------
 size_t
 NotificationDelegate::Subscribe(size_t id) {
+    // Nobody would remove a function added after the thread ended
+    if (gThreadEnded) {
+        Base::RemoveById(id);
+        return size_t(-1);
+    }
+
     if (id != size_t(-1) && !mSubscribed) {
         const auto lock = NotificationManager::Lock();
         mSubscribed = true;
@@ -257,62 +271,62 @@ NotificationManager::RemoveThread(TID tid) {
 //-------------------------------------
 void
 NotificationManager::ClearThisThread() {
-    State                   &state = GetState();
-    const TID               tid = std::this_thread::get_id();
-    std::vector<Delegate *> delegates;
-    {
-        const auto lock = Lock();
-
-        // Pointers, not iterators: a destructor may call GetDelegate and grow the map
-        auto delegatesIt = state.delegatesByThread.find(tid);
-        if (delegatesIt != state.delegatesByThread.end()) {
-            for (auto &pair : delegatesIt->second) {
-                delegates.emplace_back(&pair.second);
-            }
-        }
-    }
+    State     &state = GetState();
+    const TID tid    = std::this_thread::get_id();
 
     ++gNumClears;
 
-    // The delegates are cleared outside the lock, as in RemoveThread.
-    // Delegate::Clear() is safe even from one of their callbacks
-    for (auto *delegate : delegates) {
-        delegate->Clear();
-    }
+    // Repeats until nothing is left, as in RemoveThread
+    bool found;
+    do {
+        std::vector<Delegate *> delegates;
+        PendingList             pending;
+        {
+            const auto lock = Lock();
+            found = false;
 
-    // After the Clear() calls,
-    // so a destructor that added a function does not leave the thread subscribed,
-    // and the notifications stored meanwhile are dropped too
-    PendingList pending;
-    {
-        const auto lock = Lock();
+            // Pointers, not iterators: a destructor may call GetDelegate and grow the map
+            auto delegatesIt = state.delegatesByThread.find(tid);
+            if (delegatesIt != state.delegatesByThread.end()) {
+                for (auto &pair : delegatesIt->second) {
+                    pair.second.mSubscribed = false;
+                    if (pair.second.GetNumDelegates() != 0) {
+                        delegates.emplace_back(&pair.second);
+                        found = true;
+                    }
+                }
+            }
 
-        auto delegatesIt = state.delegatesByThread.find(tid);
-        if (delegatesIt != state.delegatesByThread.end()) {
-            for (auto &pair : delegatesIt->second) {
-                pair.second.mSubscribed = false;
+            auto pendingIt = state.pendingByThread.find(tid);
+            if (pendingIt != state.pendingByThread.end() && !pendingIt->second.empty()) {
+                pending.swap(pendingIt->second);
+                found = true;
             }
         }
 
-        auto pendingIt = state.pendingByThread.find(tid);
-        if (pendingIt != state.pendingByThread.end()) {
-            pending.swap(pendingIt->second);
+        // Delegate::Clear() is safe even from one of their callbacks
+        for (auto *delegate : delegates) {
+            delegate->Clear();
         }
-    }
+    } while (found);
 }
 
 //-------------------------------------
 void
 NotificationManager::Clear() {
-    State             &state = GetState();
-    DelegatesByThread delegatesByThread;
-    PendingByThread   pendingByThread;
-    {
-        const auto lock = Lock();
+    State &state = GetState();
 
-        delegatesByThread.swap(state.delegatesByThread);
-        pendingByThread.swap(state.pendingByThread);
-    }
+    // Repeats until nothing is left, as in RemoveThread
+    bool found;
+    do {
+        DelegatesByThread delegatesByThread;
+        PendingByThread   pendingByThread;
+        {
+            const auto lock = Lock();
+            found = !state.delegatesByThread.empty() || !state.pendingByThread.empty();
 
-    // The old maps are destroyed here, after releasing the lock, as in RemoveThread
+            delegatesByThread.swap(state.delegatesByThread);
+            pendingByThread.swap(state.pendingByThread);
+        }
+    } while (found);
 }
