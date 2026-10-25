@@ -3,8 +3,8 @@
 namespace MindShake {
 
     enum class NotificationId {
-        Log,
-        Kill,
+        EnemyKilled,
+        ScoreChanged,
     };
 
 } // end of namespace

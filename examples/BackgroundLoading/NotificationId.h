@@ -3,7 +3,11 @@
 namespace MindShake {
 
     enum class NotificationId {
-        Hello,
+        LoaderReady,
+        LoadAsset,
+        LoadProgress,
+        AssetLoaded,
+        Quit,
     };
 
 } // end of namespace

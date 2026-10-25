@@ -13,7 +13,10 @@
 #include <thread>
 #include <mutex>
 #include <atomic>
-#if __cplusplus >= 201703L || (defined(_MSVC_LANG) && _MSVC_LANG >= 201703L)
+#if defined(NOTIFICATIONMANAGER_USE_STD_ANY)
+    #if __cplusplus < 201703L && (!defined(_MSVC_LANG) || _MSVC_LANG < 201703L)
+        #error "NOTIFICATIONMANAGER_USE_STD_ANY needs C++17 or later"
+    #endif
     #include <any>
     using std::any;
     using std::any_cast;
@@ -43,15 +46,14 @@ namespace MindShake {
                                 NotificationDelegate(NotificationDelegate &&)   = delete;
             NotificationDelegate &operator=(NotificationDelegate &&)            = delete;
 
-            // Adding a function subscribes the thread; GetDelegate and Remove do not
             template <typename... Params>
-            size_t              Add(Params &&...params)                         { return Subscribe(Base::Add(std::forward<Params>(params)...)); }
-            // A template cannot take an overloaded function by name, but this overload can
-            size_t              Add(TFunc func)                                 { return Subscribe(Base::Add(func));                            }
+            size_t              Add(Params &&...params)                         { return mEnded ? size_t(-1) : Subscribe(Base::Add(std::forward<Params>(params)...)); }
+            size_t              Add(TFunc func)                                 { return mEnded ? size_t(-1) : Subscribe(Base::Add(func));                            }
+
+            void                Clear()                                         { if (!mEnded) { Base::Clear(); } }
 
             using Base::Remove;
             using Base::RemoveById;
-            using Base::Clear;
             using Base::GetNumDelegates;
             using Base::IsRunning;
 
@@ -62,7 +64,9 @@ namespace MindShake {
 
         private:
             // Only its own thread writes it; other threads read it under the lock
-            bool                mSubscribed = false;
+            bool    mSubscribed = false;
+            // Set only in the delegate that ended threads share, so it never changes
+            bool    mEnded      = false;
 
             friend class NotificationManager;
     };
@@ -74,44 +78,45 @@ namespace MindShake {
             using TID      = std::thread::id;
 
         public:
-            static constexpr uint32_t   major = 1;
-            static constexpr uint32_t   minor = 4;
+            static constexpr uint32_t   major = 2;
+            static constexpr uint32_t   minor = 0;
             static constexpr uint32_t   patch = 0;
 
         public:
             static Delegate &   GetDelegate(NotificationId id);
+
             static void         SendNotification(NotificationId id, any data = any(), bool overwrite = false);
 
-            static void         SendStoredNotificationsForThisThread();
-
-            // Removes the functions and the pending notifications of the calling thread,
-            // and the thread receives nothing more until it adds a function again.
-            // It is safe to call it from a callback,
-            // and the references returned by GetDelegate stay valid.
-            static void         ClearThisThread();
+            static void         ReceivePendingNotifications();
 
         // Configuration
         public:
             // Use a mutex to protect the critical parts or disable it to reduce
             // the mutex overhead in case the user knows that it is safe or
             // is working on a monothread application.
-            // Use it carefully.
             // Change it before any other thread uses the NotificationManager.
-            static void         SetMT(bool set)         { mEnableMT = set;   }
-            static void         EnableMT()              { mEnableMT = true;  }
-            static void         DisableMT()             { mEnableMT = false; }
-            static bool         GetMT()                 { return mEnableMT;  }
+            // Use it carefully.
+            static void         SetMultiThread(bool set)    { mMultiThread = set;   }
+            static void         EnableMultiThread()         { mMultiThread = true;  }
+            static void         DisableMultiThread()        { mMultiThread = false; }
+            static bool         GetMultiThread()            { return mMultiThread;  }
 
             // Automatically send notifications on call to SendNotification or
-            // wait until the user calls SendStoredNotificationsForThisThread.
+            // wait until the user calls ReceivePendingNotifications.
             // This could reduce interruptions in a monothread applications.
-            static void         SetAutoSend(bool set)   { mAutoSend.store(set, std::memory_order_relaxed);   }
-            static void         EnableAutoSend()        { mAutoSend.store(true, std::memory_order_relaxed);  }
-            static void         DisableAutoSend()       { mAutoSend.store(false, std::memory_order_relaxed); }
-            static bool         GetAutoSend()           { return mAutoSend.load(std::memory_order_relaxed);  }
+            static void         SetAutoSend(bool set)       { mAutoSend.store(set, std::memory_order_relaxed);   }
+            static void         EnableAutoSend()            { mAutoSend.store(true, std::memory_order_relaxed);  }
+            static void         DisableAutoSend()           { mAutoSend.store(false, std::memory_order_relaxed); }
+            static bool         GetAutoSend()               { return mAutoSend.load(std::memory_order_relaxed);  }
 
         // Finalize
         public:
+            // Removes the functions and the pending notifications of the calling thread,
+            // and the thread receives nothing more until it adds a function again.
+            // It is safe to call it from a callback,
+            // and the references returned by GetDelegate stay valid.
+            static void         ClearThisThread();
+
             // Removes everything.
             // It destroys the delegates, so call it only when no other thread uses
             // the NotificationManager, never from a callback, and do not use the
@@ -121,7 +126,7 @@ namespace MindShake {
         protected:
             static std::unique_lock<std::mutex> Lock() {
                 std::unique_lock<std::mutex> lock(GetState().mutex, std::defer_lock);
-                if (mEnableMT) {
+                if (mMultiThread) {
                     lock.lock();
                 }
                 return lock;
@@ -132,7 +137,13 @@ namespace MindShake {
             // instead of storing the notification for it
             static Delegate *   DistributeNotification(NotificationId id, const std::shared_ptr<const any> &data, bool overwrite, bool callHere);
 
-            static void         RemoveThread(TID tid);
+            // Keeps every delegate alive while it empties them, because a destructor may use any of them
+            static void         EmptyDelegates(bool allThreads);
+
+            static void         RemoveThread();
+
+            static void         CreateState();
+            static void         DestroyState();
 
         private:
             struct ThreadCleaner;
@@ -147,7 +158,12 @@ namespace MindShake {
             NotificationManager &operator=(NotificationManager &&)               = delete;
 
         protected:
-            using DelegateMap       = std::unordered_map<NotificationId, Delegate>;
+            // C++11 does not require std::hash to support enums, it came in C++14
+            struct IdHash {
+                size_t operator()(NotificationId id) const { return static_cast<size_t>(id); }
+            };
+
+            using DelegateMap       = std::unordered_map<NotificationId, Delegate, IdHash>;
             using DelegatesByThread = std::unordered_map<TID, DelegateMap>;
             // All the receivers share one read-only payload,
             // so the queues only move pointers and no user code runs under the lock
@@ -157,15 +173,19 @@ namespace MindShake {
 
             struct State {
                 // First, so it is destroyed after the maps it protects
-                std::mutex          mutex;
-                DelegatesByThread   delegatesByThread;
-                PendingByThread     pendingByThread;
+                std::mutex              mutex;
+                DelegatesByThread       delegatesByThread;
+                PendingByThread         pendingByThread;
+                // The thread that runs the constructors of the globals, and later their destructors
+                TID                     mainThread;
+                // What GetDelegate returns to a thread that has ended. It ignores every change
+                NotificationDelegate    endedThread;
             };
 
             static State &      GetState()  { return *mState; }
 
         protected:
-            static bool                 mEnableMT;
+            static bool                 mMultiThread;
             static std::atomic<bool>    mAutoSend;
 
         private:

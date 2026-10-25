@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(NotificationCenter VERSION 1.3.0 LANGUAGES CXX)
+project(NotificationManager VERSION 2.0.0 LANGUAGES CXX)
 
 # Options
 #--------------------------------------
@@ -11,12 +11,16 @@ else()
     set(NOTIFICATIONMANAGER_IS_TOP_LEVEL OFF)
 endif()
 option(NOTIFICATIONMANAGER_BUILD_EXAMPLES "Build the examples" ${NOTIFICATIONMANAGER_IS_TOP_LEVEL})
+option(NOTIFICATIONMANAGER_BUILD_TESTS    "Build the tests"    ${NOTIFICATIONMANAGER_IS_TOP_LEVEL})
+
+# By default the library supports C++11, with its own copy of any (linb::any).
+# Projects that use C++17 or later should turn this on, because std::any comes with the compiler
+option(NOTIFICATIONMANAGER_USE_STD_ANY "Use std::any, which needs C++17, instead of linb::any" OFF)
 
 # Only for the main project
 #--------------------------------------
 if (NOTIFICATIONMANAGER_IS_TOP_LEVEL)
-    # NotificationManager.h uses std::any from C++17 on, and its own any before, so the library and the code that
-    # uses it must be built with the same standard. As a subproject, the library takes the one of the main project.
+    # The oldest standard the library supports, so the examples and the tests check it
     set(CMAKE_CXX_STANDARD          11)
     set(CMAKE_CXX_STANDARD_REQUIRED ON)
     set(CMAKE_CXX_EXTENSIONS        OFF)
@@ -62,7 +66,7 @@ function(notificationmanager_setup_target target)
 
         target_compile_options(${target}
         PRIVATE
-            /W3
+            /W4 /wd4100
             /Zc:__cplusplus
             /utf-8
         )
@@ -100,12 +104,27 @@ add_library(NotificationManager STATIC
     ${SRC_Notifications}
 )
 
+add_library(NotificationManager::NotificationManager ALIAS NotificationManager)
+
 notificationmanager_setup_target(NotificationManager)
 
-target_compile_features(NotificationManager
-PUBLIC
-    cxx_std_11
-)
+if (NOTIFICATIONMANAGER_USE_STD_ANY)
+    # PUBLIC, so the code that uses the library gets the same any and at least C++17
+    target_compile_definitions(NotificationManager
+    PUBLIC
+        NOTIFICATIONMANAGER_USE_STD_ANY
+    )
+
+    target_compile_features(NotificationManager
+    PUBLIC
+        cxx_std_17
+    )
+else()
+    target_compile_features(NotificationManager
+    PUBLIC
+        cxx_std_11
+    )
+endif()
 
 target_include_directories(NotificationManager
 PUBLIC
@@ -136,24 +155,34 @@ function(notificationmanager_add_example target source_dir)
     notificationmanager_setup_target(${target})
 
     target_link_libraries(${target}
-        NotificationManager
+    PRIVATE
+        NotificationManager::NotificationManager
+    )
+
+    set_target_properties(${target}
+    PROPERTIES
+        FOLDER Examples
     )
 endfunction()
 
 if (NOTIFICATIONMANAGER_BUILD_EXAMPLES)
-    notificationmanager_add_example(Example1 example1
-        ${CMAKE_CURRENT_SOURCE_DIR}/example1/main.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/example1/NotificationId.h
+    notificationmanager_add_example(GameEvents examples/GameEvents
+        ${CMAKE_CURRENT_SOURCE_DIR}/examples/GameEvents/main.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/examples/GameEvents/NotificationId.h
     )
 
-    notificationmanager_add_example(Example2 example2
-        ${CMAKE_CURRENT_SOURCE_DIR}/example2/main.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/example2/agent.h
-        ${CMAKE_CURRENT_SOURCE_DIR}/example2/NotificationId.h
+    notificationmanager_add_example(BackgroundLoading examples/BackgroundLoading
+        ${CMAKE_CURRENT_SOURCE_DIR}/examples/BackgroundLoading/main.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/examples/BackgroundLoading/NotificationId.h
     )
+endif()
 
-    notificationmanager_add_example(Example3 example3
-        ${CMAKE_CURRENT_SOURCE_DIR}/example3/main.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/example3/NotificationId.h
-    )
+# Tests
+#--------------------------------------
+if (NOTIFICATIONMANAGER_BUILD_TESTS)
+    # include(CTest) writes the DartConfiguration.tcl that some tools need to run ctest, like CMake Tools in VS Code.
+    # The property stops it from adding the dashboard targets (Continuous, Experimental, Nightly...)
+    set_property(GLOBAL PROPERTY CTEST_TARGETS_ADDED 1)
+    include(CTest)
+    add_subdirectory(tests)
 endif()

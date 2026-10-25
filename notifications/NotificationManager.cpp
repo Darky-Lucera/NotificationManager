@@ -10,42 +10,85 @@
 
 using namespace MindShake;
 
-constexpr uint32_t                      NotificationManager::major;
-constexpr uint32_t                      NotificationManager::minor;
-constexpr uint32_t                      NotificationManager::patch;
+constexpr uint32_t                  NotificationManager::major;
+constexpr uint32_t                  NotificationManager::minor;
+constexpr uint32_t                  NotificationManager::patch;
 
-bool                                    NotificationManager::mEnableMT = true;
-std::atomic<bool>                       NotificationManager::mAutoSend(true);
+bool                                NotificationManager::mMultiThread = true;
+std::atomic<bool>                   NotificationManager::mAutoSend(true);
 
-size_t                                  NotificationManager::mInitCount = 0;
-NotificationManager::State *            NotificationManager::mState     = nullptr;
-NotificationManager::StateStorage       NotificationManager::mStateStorage;
+size_t                              NotificationManager::mInitCount = 0;
+NotificationManager::State *        NotificationManager::mState     = nullptr;
+NotificationManager::StateStorage   NotificationManager::mStateStorage;
 
 //-------------------------------------
 NotificationManagerInit::NotificationManagerInit() {
     if (NotificationManager::mInitCount++ == 0) {
-        NotificationManager::mState = new (NotificationManager::mStateStorage.bytes) NotificationManager::State();
+        NotificationManager::CreateState();
     }
 }
 
 //-------------------------------------
 NotificationManagerInit::~NotificationManagerInit() {
     if (--NotificationManager::mInitCount == 0) {
-        NotificationManager::Clear();
-        NotificationManager::mState->~State();
-        NotificationManager::mState = nullptr;
+        NotificationManager::DestroyState();
     }
 }
 
+//-------------------------------------
+void
+NotificationManager::CreateState() {
+    mState = new (mStateStorage.bytes) State();
+    mState->mainThread = std::this_thread::get_id();
+    mState->endedThread.mEnded = true;
+}
+
+//-------------------------------------
+void
+NotificationManager::DestroyState() {
+    Clear();
+    mState->~State();
+    mState = nullptr;
+}
+
 // Counts the ClearThisThread calls of this thread.
-// SendStoredNotificationsForThisThread checks it to stop when a callback clears the thread
-static thread_local size_t gNumClears = 0;
+// ReceivePendingNotifications checks it to stop when a callback clears the thread
+static thread_local size_t  gNumClears = 0;
 
 // Nonzero while the NotificationManager is calling a delegate of this thread
-static thread_local size_t gCallDepth = 0;
+static thread_local size_t  gCallDepth = 0;
 
-// Set by the ThreadCleaner. It has no destructor, so later thread_local destructors can still read it
-static thread_local bool gThreadEnded = false;
+// Set when the ThreadCleaner of this thread is destroyed.
+// It has no destructor, so later thread_local destructors can still read it
+static thread_local bool    gCleanerDestroyed = false;
+
+// Set when the data of this thread is removed. The main thread keeps its data until the state is destroyed
+static thread_local bool    gThreadEnded = false;
+
+//-------------------------------------
+// Moves the entries that match to the end of "to", and keeps the order of the ones that stay
+template <typename List, typename Predicate>
+static void
+MoveOut(List &from, List &to, Predicate matches) {
+    // Reserved first, so nothing can throw after the first entry has moved
+    to.reserve(to.size() + from.size());
+
+    size_t count = 0;
+    for (size_t i = 0; i < from.size(); ++i) {
+        if (matches(from[i])) {
+            to.emplace_back(std::move(from[i]));
+        }
+        else {
+            // Moves the ones we keep forward to fill the gaps left by the removed ones
+            if (count != i) {
+                from[count] = std::move(from[i]);
+            }
+            ++count;
+        }
+    }
+
+    from.erase(from.begin() + ptrdiff_t(count), from.end());
+}
 
 //-------------------------------------
 struct CallDepthGuard {
@@ -59,25 +102,40 @@ struct CallDepthGuard {
 // and a new thread with the same id would inherit them
 struct NotificationManager::ThreadCleaner {
     ~ThreadCleaner() {
-        gThreadEnded = true;
+        gCleanerDestroyed = true;
 
         // MinGW destroys the thread_local objects of the main thread after the static ones,
         // so the state may already be gone here
-        if (mState != nullptr) {
-            RemoveThread(std::this_thread::get_id());
+        if (mState == nullptr) {
+            return;
         }
+
+        // The main thread ends before the globals are destroyed, and they may still use its delegates.
+        // DestroyState clears them later
+        if (std::this_thread::get_id() == mState->mainThread) {
+            return;
+        }
+
+        gThreadEnded = true;
+        RemoveThread();
     }
 };
 
 //-------------------------------------
 NotificationManager::Delegate &
 NotificationManager::GetDelegate(NotificationId id) {
-    // Passing again through a destroyed thread_local is undefined behavior
-    if (!gThreadEnded) {
-        static thread_local ThreadCleaner cleaner;
+    State &state = GetState();
+
+    // Its entries are gone, and nobody would remove new ones
+    if (gThreadEnded) {
+        return state.endedThread;
     }
 
-    State &state = GetState();
+    // Passing again through a destroyed thread_local is undefined behavior.
+    // It happens in the main thread, whose globals are destroyed after its thread_local objects
+    if (!gCleanerDestroyed) {
+        static thread_local ThreadCleaner cleaner;
+    }
 
     const auto lock = Lock();
 
@@ -87,12 +145,6 @@ NotificationManager::GetDelegate(NotificationId id) {
 //-------------------------------------
 size_t
 NotificationDelegate::Subscribe(size_t id) {
-    // Nobody would remove a function added after the thread ended
-    if (gThreadEnded) {
-        Base::RemoveById(id);
-        return size_t(-1);
-    }
-
     if (id != size_t(-1) && !mSubscribed) {
         const auto lock = NotificationManager::Lock();
         mSubscribed = true;
@@ -141,21 +193,7 @@ NotificationManager::DistributeNotification(NotificationId id, const Payload &da
 
             auto &pending = state.pendingByThread[tid];
             if (overwrite) {
-                size_t count = 0;
-                for (size_t i = 0; i < pending.size(); ++i) {
-                    if (pending[i].first == id) {
-                        overwritten.emplace_back(std::move(pending[i]));
-                    }
-                    else {
-                        // Moves the ones we keep forward to fill the gaps left by the removed ones
-                        if (count != i) {
-                            pending[count] = std::move(pending[i]);
-                        }
-                        ++count;
-                    }
-                }
-
-                pending.erase(pending.begin() + ptrdiff_t(count), pending.end());
+                MoveOut(pending, overwritten, [id](const PendingList::value_type &entry) { return entry.first == id; });
             }
 
             // A running delegate would ignore the call, so the notification is stored instead.
@@ -175,7 +213,7 @@ NotificationManager::DistributeNotification(NotificationId id, const Payload &da
 
 //-------------------------------------
 void
-NotificationManager::SendStoredNotificationsForThisThread() {
+NotificationManager::ReceivePendingNotifications() {
     State       &state = GetState();
     PendingList batch;
     DelegateMap *threadDelegates;
@@ -198,22 +236,10 @@ NotificationManager::SendStoredNotificationsForThisThread() {
         else {
             // From a callback: a running delegate would ignore its notifications,
             // so they stay pending, in order
-            size_t count = 0;
-            for (size_t i = 0; i < pending.size(); ++i) {
-                auto it = threadDelegates->find(pending[i].first);
-                if (it != threadDelegates->end() && it->second.IsRunning()) {
-                    // Moves the ones we keep forward to fill the gaps left by the removed ones
-                    if (count != i) {
-                        pending[count] = std::move(pending[i]);
-                    }
-                    ++count;
-                }
-                else {
-                    batch.emplace_back(std::move(pending[i]));
-                }
-            }
-
-            pending.erase(pending.begin() + ptrdiff_t(count), pending.end());
+            MoveOut(pending, batch, [threadDelegates](const PendingList::value_type &entry) {
+                auto it = threadDelegates->find(entry.first);
+                return it == threadDelegates->end() || !it->second.IsRunning();
+            });
         }
     }
 
@@ -237,70 +263,59 @@ NotificationManager::SendStoredNotificationsForThisThread() {
 
 //-------------------------------------
 void
-NotificationManager::RemoveThread(TID tid) {
-    State &state = GetState();
-
-    // Destroying a lambda may run code that uses the NotificationManager,
-    // even GetDelegate for this thread.
-    // So everything is destroyed outside the lock, and it repeats until nothing is left
-    bool found;
-    do {
-        DelegateMap threadDelegates;
-        PendingList pending;
-        {
-            const auto lock = Lock();
-            found = false;
-
-            auto delegatesIt = state.delegatesByThread.find(tid);
-            if (delegatesIt != state.delegatesByThread.end()) {
-                threadDelegates.swap(delegatesIt->second);
-                state.delegatesByThread.erase(delegatesIt);
-                found = true;
-            }
-
-            auto pendingIt = state.pendingByThread.find(tid);
-            if (pendingIt != state.pendingByThread.end()) {
-                pending.swap(pendingIt->second);
-                state.pendingByThread.erase(pendingIt);
-                found = true;
-            }
-        }
-    } while (found);
-}
-
-//-------------------------------------
-void
-NotificationManager::ClearThisThread() {
+NotificationManager::EmptyDelegates(bool allThreads) {
     State     &state = GetState();
-    const TID tid    = std::this_thread::get_id();
+    const TID self   = std::this_thread::get_id();
 
-    ++gNumClears;
-
-    // Repeats until nothing is left, as in RemoveThread
+    // Destroying a function or a payload may run code that uses the NotificationManager,
+    // even to add functions.
+    // So it runs outside the lock, while all the delegates are alive,
+    // and it repeats until nothing is left
     bool found;
     do {
-        std::vector<Delegate *> delegates;
-        PendingList             pending;
+        std::vector<Delegate *>  delegates;
+        std::vector<PendingList> pendingLists;
         {
             const auto lock = Lock();
             found = false;
 
-            // Pointers, not iterators: a destructor may call GetDelegate and grow the map
-            auto delegatesIt = state.delegatesByThread.find(tid);
-            if (delegatesIt != state.delegatesByThread.end()) {
-                for (auto &pair : delegatesIt->second) {
+            // Pointers, not iterators: a destructor may call GetDelegate and grow the maps
+            auto takeDelegates = [&delegates, &found](DelegateMap &threadDelegates) {
+                for (auto &pair : threadDelegates) {
                     pair.second.mSubscribed = false;
                     if (pair.second.GetNumDelegates() != 0) {
                         delegates.emplace_back(&pair.second);
                         found = true;
                     }
                 }
-            }
+            };
 
-            auto pendingIt = state.pendingByThread.find(tid);
-            if (pendingIt != state.pendingByThread.end() && !pendingIt->second.empty()) {
-                pending.swap(pendingIt->second);
-                found = true;
+            auto takePending = [&pendingLists, &found](PendingList &pending) {
+                if (!pending.empty()) {
+                    pendingLists.emplace_back();
+                    pendingLists.back().swap(pending);
+                    found = true;
+                }
+            };
+
+            if (allThreads) {
+                for (auto &pair : state.delegatesByThread) {
+                    takeDelegates(pair.second);
+                }
+                for (auto &pair : state.pendingByThread) {
+                    takePending(pair.second);
+                }
+            }
+            else {
+                auto delegatesIt = state.delegatesByThread.find(self);
+                if (delegatesIt != state.delegatesByThread.end()) {
+                    takeDelegates(delegatesIt->second);
+                }
+
+                auto pendingIt = state.pendingByThread.find(self);
+                if (pendingIt != state.pendingByThread.end()) {
+                    takePending(pendingIt->second);
+                }
             }
         }
 
@@ -313,20 +328,34 @@ NotificationManager::ClearThisThread() {
 
 //-------------------------------------
 void
+NotificationManager::RemoveThread() {
+    State     &state = GetState();
+    const TID self   = std::this_thread::get_id();
+
+    EmptyDelegates(false);
+
+    // Empty delegates and queues run no user code when they are destroyed
+    const auto lock = Lock();
+    state.delegatesByThread.erase(self);
+    state.pendingByThread.erase(self);
+}
+
+//-------------------------------------
+void
+NotificationManager::ClearThisThread() {
+    ++gNumClears;
+    EmptyDelegates(false);
+}
+
+//-------------------------------------
+void
 NotificationManager::Clear() {
     State &state = GetState();
 
-    // Repeats until nothing is left, as in RemoveThread
-    bool found;
-    do {
-        DelegatesByThread delegatesByThread;
-        PendingByThread   pendingByThread;
-        {
-            const auto lock = Lock();
-            found = !state.delegatesByThread.empty() || !state.pendingByThread.empty();
+    EmptyDelegates(true);
 
-            delegatesByThread.swap(state.delegatesByThread);
-            pendingByThread.swap(state.pendingByThread);
-        }
-    } while (found);
+    // Empty delegates and queues run no user code when they are destroyed
+    const auto lock = Lock();
+    state.delegatesByThread.clear();
+    state.pendingByThread.clear();
 }
